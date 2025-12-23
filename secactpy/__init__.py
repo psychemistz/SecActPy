@@ -46,13 +46,16 @@ __version__ = "0.1.0"
 # High-level API (most users need only these)
 from .inference import (
     secact_activity,
+    secact_activity_inference,
     prepare_data,
     scale_columns,
     compute_differential,
+    group_signatures,
+    expand_rows,
 )
 
 # Signature loading
-from .signatures import (
+from .signature import (
     load_signature,
     load_secact,
     load_cytosig,
@@ -99,9 +102,12 @@ from .rng import GSLRNG, generate_permutation_table
 __all__ = [
     # Main API
     "secact_activity",
+    "secact_activity_inference",
     "prepare_data",
     "scale_columns",
     "compute_differential",
+    "group_signatures",
+    "expand_rows",
     
     # Signature loading
     "load_signature",
