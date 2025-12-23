@@ -50,23 +50,29 @@ io = [
     "h5py>=3.0.0",
     "anndata>=0.8.0",
 ]
+scrnaseq = [
+    "anndata>=0.8.0",
+    "scanpy>=1.9.0",
+]
 all = [
     "cupy>=10.0.0",
     "h5py>=3.0.0",
     "anndata>=0.8.0",
+    "scanpy>=1.9.0",
 ]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
+    "anndata>=0.8.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/psychemistz/SecActPy"
-Documentation = "https://github.com/psychemistz/SecActPy#readme"
-Repository = "https://github.com/psychemistz/SecActPy"
-Issues = "https://github.com/psychemistz/SecActPy/issues"
+Homepage = "https://github.com/your-username/SecActPy"
+Documentation = "https://github.com/your-username/SecActPy#readme"
+Repository = "https://github.com/your-username/SecActPy"
+Issues = "https://github.com/your-username/SecActPy/issues"
 
 [tool.setuptools]
 packages = ["secactpy", "secactpy.data"]

@@ -215,3 +215,10 @@ dataset/output/ridge/bulk/._*.txt
 dataset/output/ridge/bulk/._*.csv
 dataset/output/signature/bulk/._*.txt
 dataset/output/signature/bulk/._*.csv
+dataset/output/signature/scRNAseq/._*.txt
+dataset/output/signature/scRNAseq/._*.csv
+dataset/output/signature/ST/._*.txt
+dataset/output/signature/ST/._*.csv
+
+dataset
+

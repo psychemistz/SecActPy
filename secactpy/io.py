@@ -38,6 +38,7 @@ __all__ = [
     'results_to_anndata',
     'load_as_anndata',
     'results_to_dataframes',
+    'save_st_results_to_h5ad',
     'H5PY_AVAILABLE',
     'ANNDATA_AVAILABLE',
 ]
@@ -313,6 +314,209 @@ def results_to_anndata(
         for key, value in results['attrs'].items():
             if key not in ['feature_names', 'sample_names']:
                 adata.uns[key] = value
+    
+    return adata
+
+
+def save_st_results_to_h5ad(
+    counts,
+    activity_results: Dict[str, Any],
+    output_path: Union[str, Path],
+    gene_names: Optional[List[str]] = None,
+    cell_names: Optional[List[str]] = None,
+    spatial_coords: Optional[pd.DataFrame] = None,
+    metadata: Optional[pd.DataFrame] = None,
+    platform: str = "unknown"
+) -> 'anndata.AnnData':
+    """
+    Save spatial transcriptomics data with activity results to h5ad format.
+    
+    Creates a combined AnnData object containing:
+    - Raw counts in adata.X (or adata.raw.X)
+    - Activity results in adata.obsm (SecAct_beta, SecAct_zscore, etc.)
+    - Spatial coordinates in adata.obsm['spatial']
+    - Metadata in adata.obs
+    
+    Parameters
+    ----------
+    counts : array-like or sparse matrix
+        Count matrix (genes × cells). Will be transposed for AnnData format.
+    activity_results : dict
+        Results from secact_activity_inference_st containing:
+        - 'beta': DataFrame (proteins × cells)
+        - 'se': DataFrame (proteins × cells)
+        - 'zscore': DataFrame (proteins × cells)
+        - 'pvalue': DataFrame (proteins × cells)
+    output_path : str or Path
+        Output path for .h5ad file.
+    gene_names : list, optional
+        Gene names. If None, uses integers.
+    cell_names : list, optional
+        Cell/spot names. If None, uses integers.
+    spatial_coords : DataFrame, optional
+        Spatial coordinates with columns for x, y positions.
+        Index should match cell_names.
+    metadata : DataFrame, optional
+        Additional cell/spot metadata.
+        Index should match cell_names.
+    platform : str, default="unknown"
+        Platform name (e.g., "Visium", "CosMx").
+    
+    Returns
+    -------
+    AnnData
+        The created AnnData object.
+    
+    Examples
+    --------
+    >>> from secactpy import secact_activity_inference_st, load_visium_10x
+    >>> from secactpy.io import save_st_results_to_h5ad
+    >>> 
+    >>> # Load and run inference
+    >>> data = load_visium_10x("visium_folder/", min_genes=1000)
+    >>> results = secact_activity_inference_st(data, verbose=True)
+    >>> 
+    >>> # Save combined data
+    >>> adata = save_st_results_to_h5ad(
+    ...     counts=data['counts'],
+    ...     activity_results=results,
+    ...     output_path="visium_with_activity.h5ad",
+    ...     gene_names=data['gene_names'],
+    ...     cell_names=data['spot_names'],
+    ...     spatial_coords=data['spot_coordinates'],
+    ...     platform="Visium"
+    ... )
+    
+    Notes
+    -----
+    The activity results are stored in adata.obsm as:
+    - adata.obsm['SecAct_beta']: (cells × proteins)
+    - adata.obsm['SecAct_se']: (cells × proteins)
+    - adata.obsm['SecAct_zscore']: (cells × proteins)
+    - adata.obsm['SecAct_pvalue']: (cells × proteins)
+    
+    Protein names are stored in adata.uns['SecAct_protein_names'].
+    """
+    if not ANNDATA_AVAILABLE:
+        raise ImportError(
+            "anndata required. Install with: pip install anndata"
+        )
+    
+    from scipy import sparse
+    
+    output_path = Path(output_path)
+    
+    # Handle sparse matrices
+    if sparse.issparse(counts):
+        # Transpose to (cells × genes) for AnnData
+        X = counts.T.tocsr()
+    else:
+        X = np.asarray(counts).T
+    
+    n_cells, n_genes = X.shape
+    
+    # Default names
+    if gene_names is None:
+        gene_names = [f"Gene_{i}" for i in range(n_genes)]
+    if cell_names is None:
+        cell_names = [f"Cell_{i}" for i in range(n_cells)]
+    
+    # Create obs DataFrame
+    if metadata is not None:
+        obs = metadata.copy()
+        obs.index = cell_names
+    else:
+        obs = pd.DataFrame(index=cell_names)
+    
+    # Add platform info
+    obs['platform'] = platform
+    
+    # Create var DataFrame
+    var = pd.DataFrame(index=gene_names)
+    
+    # Create AnnData
+    adata = anndata.AnnData(
+        X=X,
+        obs=obs,
+        var=var
+    )
+    
+    # Add spatial coordinates
+    if spatial_coords is not None:
+        # Extract x, y coordinates
+        if 'pixel_row' in spatial_coords.columns and 'pixel_col' in spatial_coords.columns:
+            spatial_array = spatial_coords[['pixel_col', 'pixel_row']].values
+        elif 'x' in spatial_coords.columns and 'y' in spatial_coords.columns:
+            spatial_array = spatial_coords[['x', 'y']].values
+        elif spatial_coords.shape[1] >= 2:
+            spatial_array = spatial_coords.iloc[:, :2].values
+        else:
+            spatial_array = None
+        
+        if spatial_array is not None:
+            # Ensure correct order
+            if len(spatial_coords) == n_cells:
+                adata.obsm['spatial'] = spatial_array
+            else:
+                # Reindex to match cell_names
+                try:
+                    aligned_coords = spatial_coords.loc[cell_names]
+                    if 'pixel_row' in aligned_coords.columns:
+                        adata.obsm['spatial'] = aligned_coords[['pixel_col', 'pixel_row']].values
+                    else:
+                        adata.obsm['spatial'] = aligned_coords.iloc[:, :2].values
+                except KeyError:
+                    warnings.warn("Could not align spatial coordinates with cell names")
+    
+    # Add activity results to obsm
+    # Activity results are (proteins × cells), need to transpose to (cells × proteins)
+    protein_names = None
+    
+    for result_name in ['beta', 'se', 'zscore', 'pvalue']:
+        if result_name in activity_results:
+            result_df = activity_results[result_name]
+            
+            if isinstance(result_df, pd.DataFrame):
+                # Get protein names from first result
+                if protein_names is None:
+                    protein_names = list(result_df.index)
+                
+                # Align columns to cell_names
+                if set(result_df.columns) == set(cell_names):
+                    result_aligned = result_df[cell_names].T  # (cells × proteins)
+                else:
+                    # Try to find matching columns
+                    common_cells = [c for c in cell_names if c in result_df.columns]
+                    if len(common_cells) == len(cell_names):
+                        result_aligned = result_df[common_cells].T
+                    else:
+                        warnings.warn(
+                            f"Activity result columns don't match cell names for {result_name}. "
+                            f"Expected {len(cell_names)}, got {len(result_df.columns)} columns."
+                        )
+                        result_aligned = result_df.T
+                
+                adata.obsm[f'SecAct_{result_name}'] = result_aligned.values
+            else:
+                # Assume it's an array (proteins × cells)
+                adata.obsm[f'SecAct_{result_name}'] = np.asarray(result_df).T
+    
+    # Store protein names
+    if protein_names is not None:
+        adata.uns['SecAct_protein_names'] = protein_names
+    
+    # Store platform info
+    adata.uns['platform'] = platform
+    adata.uns['secactpy_version'] = "0.1.0"
+    
+    # Save to h5ad
+    adata.write_h5ad(output_path)
+    
+    print(f"Saved to: {output_path}")
+    print(f"  Shape: {adata.shape} (cells × genes)")
+    print(f"  Activity results: {[k for k in adata.obsm.keys() if k.startswith('SecAct_')]}")
+    if protein_names:
+        print(f"  Proteins: {len(protein_names)}")
     
     return adata
 

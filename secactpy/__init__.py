@@ -6,24 +6,74 @@ gene expression data using ridge regression with permutation testing.
 
 Compatible with R's SecAct/RidgeR package - produces identical results.
 
-Quick Start:
-------------
+Quick Start (Bulk RNA-seq):
+---------------------------
+    >>> from secactpy import secact_activity_inference
+    >>> 
+    >>> # From file path (auto-detect format: CSV, TSV, TXT)
+    >>> result = secact_activity_inference(
+    ...     "diff_expression.csv",  # or .tsv, .txt
+    ...     is_differential=True,
+    ...     verbose=True
+    ... )
+    >>> 
+    >>> # If genes are in first column (not row names)
+    >>> result = secact_activity_inference(
+    ...     "data.csv",
+    ...     gene_col=0,  # genes in first column
+    ...     is_differential=True
+    ... )
+    >>> 
+    >>> # Or from DataFrame
     >>> import pandas as pd
-    >>> from secactpy import secact_activity, load_signature
+    >>> diff_expr = pd.read_csv("diff_expression.csv", index_col=0)
+    >>> result = secact_activity_inference(diff_expr, is_differential=True)
     >>> 
-    >>> # Load expression data and signature
-    >>> expression = pd.read_csv("expression.csv", index_col=0)
-    >>> signature = load_signature()  # Default: SecAct
-    >>> 
-    >>> # Run inference
-    >>> result = secact_activity(expression, signature)
-    >>> 
-    >>> # Access results as DataFrames
+    >>> # Access results
     >>> activity = result['zscore']    # Activity z-scores
     >>> pvalues = result['pvalue']     # Significance
+
+Flexible Data Loading:
+----------------------
+    >>> from secactpy import load_expression_data
     >>> 
-    >>> # Find significant activities
-    >>> significant = result['pvalue'] < 0.05
+    >>> # Auto-detect format
+    >>> expr = load_expression_data("data.csv")
+    >>> expr = load_expression_data("data.tsv")
+    >>> expr = load_expression_data("data.txt")
+    >>> 
+    >>> # Genes in first column (not row names)
+    >>> expr = load_expression_data("data.csv", gene_col=0)
+
+scRNA-seq Analysis:
+-------------------
+    >>> import anndata as ad
+    >>> from secactpy import secact_activity_inference_scrnaseq
+    >>> 
+    >>> # Load AnnData (h5ad file)
+    >>> adata = ad.read_h5ad("scrnaseq_data.h5ad")
+    >>> 
+    >>> # Run pseudo-bulk analysis by cell type
+    >>> result = secact_activity_inference_scrnaseq(
+    ...     adata,
+    ...     cell_type_col="cell_type",
+    ...     is_single_cell_level=False,  # Aggregate by cell type
+    ...     verbose=True
+    ... )
+    >>> activity = result['zscore']  # (proteins × cell_types)
+
+Spatial Transcriptomics:
+------------------------
+    >>> from secactpy import secact_activity_inference_st, load_visium_10x
+    >>> 
+    >>> # Load 10X Visium data
+    >>> result = secact_activity_inference_st(
+    ...     "path/to/visium_folder/",
+    ...     min_genes=1000,
+    ...     scale_factor=1e5,
+    ...     verbose=True
+    ... )
+    >>> activity = result['zscore']  # (proteins × spots)
 
 For large datasets (>100k samples):
 -----------------------------------
@@ -47,6 +97,10 @@ __version__ = "0.1.0"
 from .inference import (
     secact_activity,
     secact_activity_inference,
+    secact_activity_inference_scrnaseq,
+    secact_activity_inference_st,
+    load_visium_10x,
+    load_expression_data,
     prepare_data,
     scale_columns,
     compute_differential,
@@ -92,6 +146,7 @@ from .io import (
     results_to_dataframes,
     get_file_info,
     concatenate_results,
+    save_st_results_to_h5ad,
     H5PY_AVAILABLE,
     ANNDATA_AVAILABLE,
 )
@@ -103,6 +158,10 @@ __all__ = [
     # Main API
     "secact_activity",
     "secact_activity_inference",
+    "secact_activity_inference_scrnaseq",
+    "secact_activity_inference_st",
+    "load_visium_10x",
+    "load_expression_data",
     "prepare_data",
     "scale_columns",
     "compute_differential",
@@ -136,6 +195,7 @@ __all__ = [
     "results_to_dataframes",
     "get_file_info",
     "concatenate_results",
+    "save_st_results_to_h5ad",
     
     # RNG
     "GSLRNG",
