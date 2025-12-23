@@ -32,8 +32,12 @@ from .ridge import ridge, compute_projection_matrix, CUPY_AVAILABLE
 
 __all__ = [
     'secact_activity',
+    'secact_activity_inference',
     'prepare_data',
     'scale_columns',
+    'compute_differential',
+    'group_signatures',
+    'expand_rows',
 ]
 
 
@@ -471,6 +475,350 @@ def compute_differential(
     diff = diff.fillna(0)
     
     return diff
+
+
+# =============================================================================
+# Signature Grouping (matching R's SecAct.activity.inference)
+# =============================================================================
+
+def group_signatures(
+    X: pd.DataFrame,
+    cor_threshold: float = 0.9
+) -> pd.DataFrame:
+    """
+    Group similar signatures by Pearson correlation.
+    
+    Matches R's .group_signatures function from RidgeR:
+    - Calculate correlation-based distance
+    - Hierarchical clustering (complete linkage)
+    - Cut tree at 1 - cor_threshold
+    - Average signatures within groups
+    - Name groups as "A|B|C"
+    
+    Parameters
+    ----------
+    X : DataFrame
+        Signature matrix (genes × proteins)
+    cor_threshold : float, default=0.9
+        Correlation threshold for grouping.
+        Signatures with correlation >= threshold are grouped together.
+    
+    Returns
+    -------
+    DataFrame
+        Grouped signature matrix with averaged values and pipe-delimited names.
+    
+    Examples
+    --------
+    >>> sig = load_signature('secact')
+    >>> grouped = group_signatures(sig, cor_threshold=0.9)
+    >>> print(f"Reduced from {sig.shape[1]} to {grouped.shape[1]} groups")
+    """
+    from scipy.cluster.hierarchy import linkage, fcluster
+    from scipy.spatial.distance import pdist
+    
+    n_features = X.shape[1]
+    
+    # Handle edge case: single column
+    if n_features <= 1:
+        return X.copy()
+    
+    # Calculate correlation distance (1 - correlation)
+    # pdist expects samples as rows, so we transpose X
+    # metric='correlation' computes 1 - pearson_correlation
+    try:
+        dist_condensed = pdist(X.T.values, metric='correlation')
+        # Handle NaN in distances (from constant columns)
+        dist_condensed = np.nan_to_num(dist_condensed, nan=1.0)
+    except Exception:
+        # Fallback: compute manually
+        corr_matrix = X.corr(method='pearson')
+        corr_matrix = corr_matrix.fillna(0).clip(-1, 1)
+        n = len(corr_matrix)
+        dist_condensed = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                dist_condensed.append(1 - corr_matrix.iloc[i, j])
+        dist_condensed = np.array(dist_condensed)
+    
+    # Hierarchical clustering with complete linkage (matching R)
+    Z = linkage(dist_condensed, method='complete')
+    
+    # Cut tree at distance = 1 - cor_threshold
+    cut_height = 1 - cor_threshold
+    group_labels = fcluster(Z, t=cut_height, criterion='distance')
+    
+    # Create mapping from protein to group
+    protein_names = list(X.columns)
+    protein_groups = dict(zip(protein_names, group_labels))
+    
+    # Build new signature matrix with grouped signatures
+    # Use list to collect columns, then concat at once (avoiding fragmentation warning)
+    group_data = {}
+    
+    for group_id in sorted(set(group_labels)):
+        # Get proteins in this group (sorted for consistent naming)
+        proteins_in_group = sorted([p for p, g in protein_groups.items() if g == group_id])
+        
+        # Create group name (e.g., "A|B|C")
+        group_name = "|".join(proteins_in_group)
+        
+        # Average signatures within group
+        group_data[group_name] = X[proteins_in_group].mean(axis=1)
+    
+    new_sig = pd.DataFrame(group_data, index=X.index)
+    
+    return new_sig
+
+
+def expand_rows(mat: pd.DataFrame) -> pd.DataFrame:
+    """
+    Expand rows with pipe-delimited names.
+    
+    Matches R's .expand_rows function from RidgeR:
+    Expands rows where index contains "|" (grouped signatures) into
+    separate rows with duplicated values.
+    
+    Parameters
+    ----------
+    mat : DataFrame
+        Matrix with potentially grouped row names (e.g., "A|B|C")
+    
+    Returns
+    -------
+    DataFrame
+        Matrix with expanded rows
+    
+    Examples
+    --------
+    >>> # If mat has row "IL6|IL6R" with values [1, 2]
+    >>> # Result will have two rows: "IL6" with [1, 2] and "IL6R" with [1, 2]
+    >>> expanded = expand_rows(mat)
+    """
+    new_rows = []
+    new_names = []
+    
+    for idx in mat.index:
+        idx_str = str(idx)
+        if "|" in idx_str:
+            # Split the grouped name
+            split_names = idx_str.split("|")
+            for name in split_names:
+                new_rows.append(mat.loc[idx].values)
+                new_names.append(name)
+        else:
+            new_rows.append(mat.loc[idx].values)
+            new_names.append(idx_str)
+    
+    result = pd.DataFrame(new_rows, index=new_names, columns=mat.columns)
+    return result
+
+
+# =============================================================================
+# Full Inference Function (matching R's SecAct.activity.inference)
+# =============================================================================
+
+def secact_activity_inference(
+    input_profile: pd.DataFrame,
+    input_profile_control: pd.DataFrame = None,
+    is_differential: bool = False,
+    is_paired: bool = False,
+    is_single_sample_level: bool = False,
+    sig_matrix: str = "secact",
+    is_group_sig: bool = True,
+    is_group_cor: float = 0.9,
+    lambda_: float = 5e5,
+    n_rand: int = 1000,
+    seed: int = 0,
+    sig_filter: bool = False,
+    backend: str = "numpy",
+    verbose: bool = True
+) -> Dict[str, pd.DataFrame]:
+    """
+    Secreted Protein Activity Inference (matching R's SecAct.activity.inference).
+    
+    This function provides full compatibility with the R RidgeR package,
+    including signature grouping and row expansion.
+    
+    Parameters
+    ----------
+    input_profile : DataFrame
+        Gene expression matrix (genes × samples).
+    input_profile_control : DataFrame, optional
+        Control expression matrix (genes × samples).
+        If None and is_differential=False, uses mean of input_profile as control.
+    is_differential : bool, default=False
+        If True, input_profile is already differential expression.
+    is_paired : bool, default=False
+        If True, perform paired differential calculation.
+    is_single_sample_level : bool, default=False
+        If True, calculate per-sample activity.
+    sig_matrix : str or DataFrame, default="secact"
+        Signature matrix. Either "secact", "cytosig", path to file, or DataFrame.
+    is_group_sig : bool, default=True
+        Whether to group similar signatures by correlation.
+    is_group_cor : float, default=0.9
+        Correlation threshold for grouping.
+    lambda_ : float, default=5e5
+        Ridge regularization parameter.
+    n_rand : int, default=1000
+        Number of permutations.
+    seed : int, default=0
+        Random seed for reproducibility.
+    sig_filter : bool, default=False
+        If True, filter signatures by available genes.
+    backend : str, default="numpy"
+        Computation backend ("numpy" or "cupy").
+    verbose : bool, default=True
+        Print progress information.
+    
+    Returns
+    -------
+    dict
+        Results dictionary containing:
+        - beta : DataFrame (proteins × samples) - Regression coefficients
+        - se : DataFrame (proteins × samples) - Standard errors
+        - zscore : DataFrame (proteins × samples) - Z-scores
+        - pvalue : DataFrame (proteins × samples) - P-values
+    
+    Examples
+    --------
+    >>> # Load differential expression data
+    >>> expr_diff = pd.read_csv("Ly86-Fc_vs_Vehicle_logFC.txt", sep="\\t", index_col=0)
+    >>> 
+    >>> # Run inference
+    >>> result = secact_activity_inference(expr_diff, is_differential=True)
+    >>> 
+    >>> # Access results
+    >>> print(result['zscore'].head())
+    """
+    from .signature import load_signature
+    
+    # --- Step 1: Load signature matrix ---
+    if isinstance(sig_matrix, pd.DataFrame):
+        X = sig_matrix.copy()
+    elif isinstance(sig_matrix, str):
+        if sig_matrix.lower() in ["secact", "cytosig"]:
+            X = load_signature(sig_matrix)
+        else:
+            # Assume it's a file path
+            X = pd.read_csv(sig_matrix, sep='\t', index_col=0)
+    else:
+        raise ValueError("sig_matrix must be 'secact', 'cytosig', a file path, or a DataFrame")
+    
+    if verbose:
+        print(f"  Loaded signature: {X.shape[0]} genes × {X.shape[1]} proteins")
+    
+    # --- Step 2: Compute differential expression if needed ---
+    if is_differential:
+        Y = input_profile.copy()
+        if Y.shape[1] == 1 and Y.columns[0] != "Change":
+            Y.columns = ["Change"]
+    else:
+        if input_profile_control is None:
+            # Center by row means
+            row_means = input_profile.mean(axis=1)
+            Y = input_profile.subtract(row_means, axis=0)
+        else:
+            if is_paired:
+                # Paired differences
+                common_samples = input_profile.columns.intersection(input_profile_control.columns)
+                Y = input_profile[common_samples] - input_profile_control[common_samples]
+            else:
+                # Difference from control mean
+                control_mean = input_profile_control.mean(axis=1)
+                Y = input_profile.subtract(control_mean, axis=0)
+            
+            if not is_single_sample_level:
+                # Aggregate to single column
+                Y = pd.DataFrame({"Change": Y.mean(axis=1)})
+    
+    # --- Step 3: Filter signatures if requested ---
+    if sig_filter:
+        available_genes = set(Y.index)
+        X = X.loc[:, X.columns.isin(available_genes)]
+    
+    # --- Step 4: Group similar signatures if requested ---
+    if is_group_sig:
+        if verbose:
+            print(f"  Grouping signatures (cor_threshold={is_group_cor})...")
+        X = group_signatures(X, cor_threshold=is_group_cor)
+        if verbose:
+            print(f"  Grouped into {X.shape[1]} signature groups")
+    
+    # --- Step 5: Find overlapping genes ---
+    common_genes = Y.index.intersection(X.index)
+    
+    if verbose:
+        print(f"  Common genes: {len(common_genes)}")
+    
+    if len(common_genes) < 2:
+        raise ValueError(
+            f"Too few overlapping genes ({len(common_genes)}) between expression and signature matrices! "
+            "Check that gene identifiers match (e.g., both use gene symbols)."
+        )
+    
+    # --- Step 6: Subset to common genes ---
+    X_aligned = X.loc[common_genes].astype(np.float64)
+    Y_aligned = Y.loc[common_genes].astype(np.float64)
+    
+    # --- Step 7: Scale (z-score normalize columns) ---
+    # R's scale() function: (x - mean) / sd
+    X_scaled = (X_aligned - X_aligned.mean()) / X_aligned.std(ddof=0)
+    Y_scaled = (Y_aligned - Y_aligned.mean()) / Y_aligned.std(ddof=0)
+    
+    # --- Step 8: Replace NaN with 0 (from constant columns) ---
+    X_scaled = X_scaled.fillna(0)
+    Y_scaled = Y_scaled.fillna(0)
+    
+    # --- Step 9: Run ridge regression ---
+    if verbose:
+        print(f"  Running ridge regression (n_rand={n_rand})...")
+    
+    result = ridge(
+        X=X_scaled.values,
+        Y=Y_scaled.values,
+        lambda_=lambda_,
+        n_rand=n_rand,
+        seed=seed,
+        backend=backend,
+        verbose=False
+    )
+    
+    # --- Step 10: Create DataFrames with proper labels ---
+    feature_names = X_scaled.columns.tolist()
+    sample_names = Y_scaled.columns.tolist()
+    
+    beta_df = pd.DataFrame(result['beta'], index=feature_names, columns=sample_names)
+    se_df = pd.DataFrame(result['se'], index=feature_names, columns=sample_names)
+    zscore_df = pd.DataFrame(result['zscore'], index=feature_names, columns=sample_names)
+    pvalue_df = pd.DataFrame(result['pvalue'], index=feature_names, columns=sample_names)
+    
+    # --- Step 11: Expand grouped signatures back to individual rows ---
+    if is_group_sig:
+        if verbose:
+            print("  Expanding grouped signatures...")
+        beta_df = expand_rows(beta_df)
+        se_df = expand_rows(se_df)
+        zscore_df = expand_rows(zscore_df)
+        pvalue_df = expand_rows(pvalue_df)
+        
+        # Sort by row name (matching R's behavior)
+        row_order = sorted(beta_df.index)
+        beta_df = beta_df.loc[row_order]
+        se_df = se_df.loc[row_order]
+        zscore_df = zscore_df.loc[row_order]
+        pvalue_df = pvalue_df.loc[row_order]
+    
+    if verbose:
+        print(f"  Result shape: {beta_df.shape}")
+    
+    return {
+        'beta': beta_df,
+        'se': se_df,
+        'zscore': zscore_df,
+        'pvalue': pvalue_df
+    }
 
 
 # =============================================================================
