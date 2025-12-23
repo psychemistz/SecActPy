@@ -310,9 +310,8 @@ result = secact_activity(expression, signature, backend='cupy')
 
 If you use SecActPy in your research, please cite:
 
-```
-Beibei Ru, Lanqi Gong, Emily Yang, Seongyong Park, George Zaki, Kenneth Aldape, Lalage Wakefield, Peng Jiang. Inference of secreted protein activities in intercellular communication.[Link(https://github.com/data2intelligence/SecAct)]
-```
+Beibei Ru, Lanqi Gong, Emily Yang, Seongyong Park, George Zaki, Kenneth Aldape, Lalage Wakefield, Peng Jiang. Inference of secreted protein activities in intercellular communication. [[Link](https://github.com/data2intelligence/SecAct)]
+
 
 ## License
 
