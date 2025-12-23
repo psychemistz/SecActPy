@@ -205,3 +205,13 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# data cache
+._.DS_Store
+dataset/._.DS_Store
+dataset/input/._*.txt
+dataset/input/._*.csv
+dataset/output/ridge/bulk/._*.txt
+dataset/output/ridge/bulk/._*.csv
+dataset/output/signature/bulk/._*.txt
+dataset/output/signature/bulk/._*.csv

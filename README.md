@@ -241,7 +241,7 @@ T = compute_projection_matrix(X, lambda_=5e5)
 SecActPy produces **identical results** to the R SecAct package when using the same parameters:
 
 ```python
-# For exact SecAct compatibility, use these defaults:
+# For exact RidgeR compatibility, use these defaults:
 result = secact_activity(
     expression, signature,
     lambda_=5e5,
@@ -251,7 +251,36 @@ result = secact_activity(
 )
 ```
 
-The package uses a GSL-compatible MT19937 random number generator to ensure cross-platform reproducibility.
+### GSL Random Number Generator Compatibility
+
+SecActPy implements a GSL-compatible MT19937 (Mersenne Twister) random number generator to ensure cross-platform reproducibility with R/RidgeR.
+
+**Important Implementation Note:** GSL treats `seed=0` specially by using `4357` as the actual seed value. This is a documented behavior in GSL's source code. SecActPy replicates this behavior exactly:
+
+```python
+# When you specify seed=0 (the default):
+result = secact_activity(expression, signature, seed=0)
+
+# Internally, GSL (and SecActPy) actually uses seed=4357
+# This ensures identical permutation sequences between R and Python
+```
+
+This means:
+- `seed=0` in SecActPy → produces the same results as `seed=0` in RidgeR (GSL)
+- Both internally use seed value `4357` for the MT19937 generator
+- Any other seed value (e.g., `seed=42`) is used directly without modification
+
+### Validation
+
+The permutation sequences have been validated to match exactly:
+
+| Test | R (GSL) | Python (SecActPy) |
+|------|---------|-------------------|
+| MT19937 raw value [0] | 4293858116 | 4293858116 ✓ |
+| uniform_int(10) first 10 | 9,1,2,9,2,4,9,7,5,7 | 9,1,2,9,2,4,9,7,5,7 ✓ |
+| Fisher-Yates shuffle [0..9] | 9,2,4,0,5,7,3,6,1,8 | 9,2,4,0,5,7,3,6,1,8 ✓ |
+
+All output arrays (beta, se, zscore, pvalue) match R output within numerical precision (~1e-15).
 
 ## GPU Acceleration
 

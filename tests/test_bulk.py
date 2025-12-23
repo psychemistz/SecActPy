@@ -34,7 +34,7 @@ from secactpy import secact_activity_inference
 PACKAGE_ROOT = Path(__file__).parent.parent
 DATA_DIR = PACKAGE_ROOT / "dataset"
 INPUT_FILE = DATA_DIR / "input" / "Ly86-Fc_vs_Vehicle_logFC.txt"
-OUTPUT_DIR = DATA_DIR / "output" / "bulk"
+OUTPUT_DIR = DATA_DIR / "output" / "signature" / "bulk"
 
 # Parameters matching R defaults
 LAMBDA = 5e5
