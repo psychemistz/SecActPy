@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secactpy"
+version = "0.1.0"
+description = "Secreted Protein Activity Inference using Ridge Regression"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Seongyong Park"}
+]
+maintainers = [
+    {name = "Seongyong Park"}
+]
+keywords = [
+    "bioinformatics",
+    "single-cell",
+    "spatial-transcriptomics",
+    "cytokine",
+    "signaling",
+    "ridge-regression",
+    "secreted-proteins",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "scipy>=1.7.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "cupy>=10.0.0",
+]
+io = [
+    "h5py>=3.0.0",
+    "anndata>=0.8.0",
+]
+all = [
+    "cupy>=10.0.0",
+    "h5py>=3.0.0",
+    "anndata>=0.8.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/psychemistz/SecActPy"
+Documentation = "https://github.com/psychemistz/SecActPy#readme"
+Repository = "https://github.com/psychemistz/SecActPy"
+Issues = "https://github.com/psychemistz/SecActPy/issues"
+
+[tool.setuptools]
+packages = ["secactpy", "secactpy.data"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"secactpy.data" = ["*.tsv.gz", "*.csv.gz", "*.parquet"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
