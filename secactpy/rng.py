@@ -165,9 +165,16 @@ class GSLRNG:
         ----------
         seed : int
             Seed value. Use 0 for RidgeR compatibility.
+            
+        Notes
+        -----
+        GSL treats seed=0 specially by using 4357 as the default seed.
+        This matches that behavior exactly.
         """
         self._seed = seed
-        self._mt = MT19937Pure(seed)
+        # GSL uses 4357 as default when seed=0
+        actual_seed = 4357 if seed == 0 else seed
+        self._mt = MT19937Pure(actual_seed)
     
     def _get_raw(self) -> int:
         """Get next raw 32-bit unsigned integer."""
@@ -259,7 +266,9 @@ class GSLRNG:
         """
         if seed is not None:
             self._seed = seed
-        self._mt = MT19937Pure(self._seed)
+        # GSL uses 4357 as default when seed=0
+        actual_seed = 4357 if self._seed == 0 else self._seed
+        self._mt = MT19937Pure(actual_seed)
 
 
 # =============================================================================
