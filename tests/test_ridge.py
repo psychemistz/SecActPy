@@ -2,14 +2,14 @@
 """
 Test Script: Core Ridge Regression Validation (No Grouping)
 
-Validates SecActPy's core ridge regression against RidgeR's 
-SecAct.inference.gsl.legacy output (no signature grouping).
+Validates SecActPy's core ridge regression against SecAct's 
+SecAct.inference.gsl output (no signature grouping).
 
 R code to generate reference:
-    library(RidgeR)
-    dataPath <- file.path(system.file(package = "RidgeR"), "extdata")
+    library(SecAct)
+    dataPath <- file.path(system.file(package = "SecAct"), "extdata")
     expr.diff <- read.table(paste0(dataPath, "/Ly86-Fc_vs_Vehicle_logFC.txt"))
-    res <- RidgeR::SecAct.inference.gsl.legacy(expr.diff)
+    res <- SecAct.inference.gsl(expr.diff)
     
     write.table(res$beta, "beta.txt", quote=F)
     write.table(res$se, "se.txt", quote=F)
@@ -282,7 +282,7 @@ def main():
     print("\n" + "=" * 70)
     if all_passed:
         print("ALL TESTS PASSED! ✓")
-        print("SecActPy core ridge matches RidgeR exactly.")
+        print("SecActPy core ridge matches SecAct exactly.")
     else:
         print("SOME TESTS FAILED! ✗")
     print("=" * 70)
