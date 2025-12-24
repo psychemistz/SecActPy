@@ -9,10 +9,10 @@ description = "Secreted Protein Activity Inference using Ridge Regression"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Seongyong Park"}
+    {name = "Seongyong Park", email = "seongyong.park@nih.gov"}
 ]
 maintainers = [
-    {name = "Seongyong Park"}
+    {name = "Seongyong Park", email = "seongyong.park@nih.gov"}
 ]
 keywords = [
     "bioinformatics",
@@ -22,6 +22,10 @@ keywords = [
     "signaling",
     "ridge-regression",
     "secreted-proteins",
+    "gene-expression",
+    "scRNA-seq",
+    "visium",
+    "cosmx",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -54,6 +58,10 @@ scrnaseq = [
     "anndata>=0.8.0",
     "scanpy>=1.9.0",
 ]
+spatial = [
+    "anndata>=0.8.0",
+    "scanpy>=1.9.0",
+]
 all = [
     "cupy>=10.0.0",
     "h5py>=3.0.0",
@@ -66,13 +74,14 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
     "anndata>=0.8.0",
+    "h5py>=3.0.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-username/SecActPy"
-Documentation = "https://github.com/your-username/SecActPy#readme"
-Repository = "https://github.com/your-username/SecActPy"
-Issues = "https://github.com/your-username/SecActPy/issues"
+Homepage = "https://github.com/psychemistz/SecActPy"
+Documentation = "https://github.com/psychemistz/SecActPy#readme"
+Repository = "https://github.com/psychemistz/SecActPy"
+Issues = "https://github.com/psychemistz/SecActPy/issues"
 
 [tool.setuptools]
 packages = ["secactpy", "secactpy.data"]
