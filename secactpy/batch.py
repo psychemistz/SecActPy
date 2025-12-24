@@ -32,13 +32,19 @@ Usage:
 
 import numpy as np
 from scipy import linalg
+from scipy import sparse as sps
 from typing import Optional, Literal, Dict, Any, Callable, Union
+from dataclasses import dataclass
 import time
 import warnings
 import gc
 import math
 
-from .rng import generate_permutation_table
+from .rng import (
+    generate_permutation_table,
+    generate_inverse_permutation_table,
+    get_cached_inverse_perm_table,
+)
 from .ridge import CUPY_AVAILABLE, EPS, DEFAULT_LAMBDA, DEFAULT_NRAND, DEFAULT_SEED
 
 # Try to import h5py for streaming output
@@ -61,6 +67,12 @@ __all__ = [
     'estimate_batch_size',
     'estimate_memory',
     'StreamingResultWriter',
+    # Sparse-preserving batch processing
+    'PopulationStats',
+    'ProjectionComponents',
+    'precompute_population_stats',
+    'precompute_projection_components',
+    'ridge_batch_sparse_preserving',
 ]
 
 
@@ -703,6 +715,376 @@ def ridge_batch(
         print(f"  Completed in {total_time:.2f}s")
     
     return final_result
+
+
+# =============================================================================
+# Sparse-Preserving Batch Processing
+# =============================================================================
+
+@dataclass
+class PopulationStats:
+    """
+    Precomputed population statistics for sparse-preserving inference.
+    
+    For large datasets, compute these once from the full Y (or representative
+    sample), then reuse for all batch processing.
+    
+    Attributes
+    ----------
+    mu : ndarray, shape (n_samples,)
+        Column means of Y.
+    sigma : ndarray, shape (n_samples,)
+        Column standard deviations of Y (ddof=1).
+    mu_over_sigma : ndarray, shape (n_samples,)
+        Precomputed μ/σ ratio.
+    n_genes : int
+        Number of genes (rows of Y).
+    """
+    mu: np.ndarray
+    sigma: np.ndarray
+    mu_over_sigma: np.ndarray
+    n_genes: int
+    
+    @classmethod
+    def from_dense(cls, Y: np.ndarray, ddof: int = 1) -> 'PopulationStats':
+        """Compute statistics from dense matrix."""
+        mu = Y.mean(axis=0)
+        sigma = Y.std(axis=0, ddof=ddof)
+        sigma = np.where(sigma < EPS, 1.0, sigma)
+        mu_over_sigma = mu / sigma
+        return cls(mu=mu, sigma=sigma, mu_over_sigma=mu_over_sigma, n_genes=Y.shape[0])
+    
+    @classmethod
+    def from_sparse(cls, Y: sps.spmatrix, ddof: int = 1) -> 'PopulationStats':
+        """Compute statistics from sparse matrix efficiently."""
+        n_genes = Y.shape[0]
+        
+        # Column sums (sparse-efficient)
+        col_sums = np.asarray(Y.sum(axis=0)).ravel()
+        mu = col_sums / n_genes
+        
+        # Column sum of squares (sparse-efficient)
+        Y_sq = Y.multiply(Y)  # Element-wise square, stays sparse
+        col_sum_sq = np.asarray(Y_sq.sum(axis=0)).ravel()
+        
+        # Variance with ddof
+        variance = (col_sum_sq - n_genes * mu**2) / (n_genes - ddof)
+        variance = np.maximum(variance, 0)
+        
+        sigma = np.sqrt(variance)
+        sigma = np.where(sigma < EPS, 1.0, sigma)
+        mu_over_sigma = mu / sigma
+        
+        return cls(mu=mu, sigma=sigma, mu_over_sigma=mu_over_sigma, n_genes=n_genes)
+
+
+@dataclass  
+class ProjectionComponents:
+    """
+    Precomputed projection matrix components for batch processing.
+    
+    Attributes
+    ----------
+    T : ndarray, shape (n_features, n_genes)
+        Projection matrix T = (X'X + λI)^{-1} X'.
+    c : ndarray, shape (n_features,)
+        Row sums of T, used for correction term: c = T @ ones.
+    lambda_ : float
+        Ridge regularization parameter.
+    n_features : int
+        Number of features (proteins/signatures).
+    n_genes : int
+        Number of genes.
+    """
+    T: np.ndarray
+    c: np.ndarray
+    lambda_: float
+    n_features: int
+    n_genes: int
+    
+    def correction_term(self, mu_over_sigma: np.ndarray) -> np.ndarray:
+        """
+        Compute correction term: outer(c, μ/σ).
+        
+        This term is constant across all permutations because neither c
+        nor μ/σ depends on the permutation.
+        
+        Parameters
+        ----------
+        mu_over_sigma : ndarray, shape (n_samples,)
+            Precomputed μ/σ from population statistics.
+            
+        Returns
+        -------
+        ndarray, shape (n_features, n_samples)
+            Correction term to subtract from (T @ Y) / σ.
+        """
+        return np.outer(self.c, mu_over_sigma)
+
+
+def precompute_population_stats(
+    Y: Union[np.ndarray, sps.spmatrix],
+    ddof: int = 1
+) -> PopulationStats:
+    """
+    Precompute population statistics from Y.
+    
+    For large datasets, compute these from the full Y once, then reuse
+    for all batch processing without modifying Y.
+    
+    Parameters
+    ----------
+    Y : ndarray or sparse, shape (n_genes, n_samples)
+        Expression matrix (can be sparse).
+    ddof : int, default=1
+        Degrees of freedom for std calculation (1 matches R's scale()).
+        
+    Returns
+    -------
+    PopulationStats
+        Precomputed statistics (μ, σ, μ/σ).
+        
+    Examples
+    --------
+    >>> stats = precompute_population_stats(Y_sparse)
+    >>> print(f"μ range: [{stats.mu.min():.4f}, {stats.mu.max():.4f}]")
+    >>> print(f"σ range: [{stats.sigma.min():.4f}, {stats.sigma.max():.4f}]")
+    """
+    if sps.issparse(Y):
+        return PopulationStats.from_sparse(Y, ddof=ddof)
+    else:
+        return PopulationStats.from_dense(np.asarray(Y), ddof=ddof)
+
+
+def precompute_projection_components(
+    X: np.ndarray,
+    lambda_: float = DEFAULT_LAMBDA
+) -> ProjectionComponents:
+    """
+    Precompute projection matrix components from signature matrix.
+    
+    Computes T = (X'X + λI)^{-1} X' and c = T @ ones for sparse-preserving
+    batch processing.
+    
+    Parameters
+    ----------
+    X : ndarray, shape (n_genes, n_features)
+        Signature matrix (genes × features).
+    lambda_ : float, default=5e5
+        Ridge regularization parameter.
+        
+    Returns
+    -------
+    ProjectionComponents
+        Precomputed T matrix and row sums c.
+        
+    Examples
+    --------
+    >>> proj = precompute_projection_components(sig_matrix, lambda_=5e5)
+    >>> print(f"T shape: {proj.T.shape}")
+    >>> print(f"c shape: {proj.c.shape}")
+    """
+    X = np.asarray(X, dtype=np.float64)
+    n_genes, n_features = X.shape
+    
+    # T = (X'X + λI)^{-1} X'
+    XtX = X.T @ X
+    XtX_reg = XtX + lambda_ * np.eye(n_features, dtype=np.float64)
+    
+    try:
+        L = linalg.cholesky(XtX_reg, lower=True)
+        XtX_inv = linalg.cho_solve((L, True), np.eye(n_features, dtype=np.float64))
+    except linalg.LinAlgError:
+        warnings.warn("Cholesky decomposition failed, using pseudo-inverse")
+        XtX_inv = linalg.pinv(XtX_reg)
+    
+    T = XtX_inv @ X.T  # (n_features, n_genes)
+    T = np.ascontiguousarray(T)  # Ensure contiguous for efficient column indexing
+    
+    # c = T @ ones (row sums)
+    c = T.sum(axis=1)
+    
+    return ProjectionComponents(
+        T=T,
+        c=c,
+        lambda_=lambda_,
+        n_features=n_features,
+        n_genes=n_genes
+    )
+
+
+def ridge_batch_sparse_preserving(
+    proj: ProjectionComponents,
+    Y: Union[np.ndarray, sps.spmatrix],
+    stats: PopulationStats,
+    n_rand: int = DEFAULT_NRAND,
+    seed: int = DEFAULT_SEED,
+    use_cache: bool = True,
+    verbose: bool = False
+) -> Dict[str, np.ndarray]:
+    """
+    Sparse-preserving ridge inference for a batch of samples.
+    
+    Uses the algebraic reformulation to keep Y sparse throughout:
+        beta = (T @ Y) / σ - outer(c, μ/σ)
+    
+    The correction term outer(c, μ/σ) is constant across all permutations.
+    
+    Parameters
+    ----------
+    proj : ProjectionComponents
+        Precomputed projection matrix from precompute_projection_components().
+    Y : ndarray or sparse, shape (n_genes, n_samples)
+        Expression batch (can be sparse, NOT scaled).
+    stats : PopulationStats
+        Population statistics from precompute_population_stats().
+    n_rand : int, default=1000
+        Number of permutations.
+    seed : int, default=0
+        Random seed for permutations.
+    use_cache : bool, default=True
+        Use cached permutation tables from /data/parks34/.cache/ridgesig_perm_tables.
+    verbose : bool, default=False
+        Print progress.
+        
+    Returns
+    -------
+    dict
+        Results with keys: 'beta', 'se', 'zscore', 'pvalue'.
+        Each has shape (n_features, n_samples).
+        
+    Notes
+    -----
+    Key insight: The correction term outer(c, μ/σ) is constant across all
+    permutations because:
+    - c = T @ ones depends only on T
+    - μ/σ depends only on Y (population statistics)
+    - Neither changes during permutation
+    
+    For permuted beta:
+        beta_perm = (T[:, inv_perm] @ Y) / σ - correction
+    
+    The correction term is the same for all permutations!
+    
+    Examples
+    --------
+    >>> # 1. Precompute statistics (once for full dataset)
+    >>> stats = precompute_population_stats(Y_full)
+    >>> proj = precompute_projection_components(X, lambda_=5e5)
+    >>> 
+    >>> # 2. Process batches (Y stays sparse)
+    >>> for batch_start in range(0, n_samples, batch_size):
+    ...     Y_batch = Y_full[:, batch_start:batch_start+batch_size]
+    ...     result = ridge_batch_sparse_preserving(proj, Y_batch, stats)
+    """
+    T = proj.T
+    c = proj.c
+    n_features, n_genes = T.shape
+    
+    # Validate dimensions
+    if Y.shape[0] != n_genes:
+        raise ValueError(f"Y rows ({Y.shape[0]}) must match T columns ({n_genes})")
+    
+    n_samples = Y.shape[1]
+    
+    # Get statistics for this batch
+    if len(stats.sigma) >= n_samples:
+        sigma = stats.sigma[:n_samples]
+        mu_over_sigma = stats.mu_over_sigma[:n_samples]
+    else:
+        # Stats were computed for smaller batch, need to slice from Y
+        sigma = stats.sigma
+        mu_over_sigma = stats.mu_over_sigma
+    
+    # Compute correction term (constant across permutations!)
+    correction = np.outer(c, mu_over_sigma)
+    
+    # Convert Y if sparse
+    is_sparse = sps.issparse(Y)
+    if is_sparse:
+        Y_csr = Y.tocsr() if not isinstance(Y, sps.csr_matrix) else Y
+    else:
+        Y_arr = np.asarray(Y, dtype=np.float64)
+    
+    # --- Compute observed beta ---
+    if verbose:
+        print(f"  Computing beta (sparse={is_sparse}, n_samples={n_samples})...")
+    
+    if is_sparse:
+        # Efficient sparse @ dense: (Y.T @ T.T).T
+        beta_raw = (Y_csr.T @ T.T).T
+        if sps.issparse(beta_raw):
+            beta_raw = beta_raw.toarray()
+    else:
+        beta_raw = T @ Y_arr
+    
+    beta = beta_raw / sigma - correction
+    
+    # --- Permutation testing ---
+    if n_rand == 0:
+        return {
+            'beta': beta,
+            'se': np.zeros_like(beta),
+            'zscore': np.zeros_like(beta),
+            'pvalue': np.ones_like(beta)
+        }
+    
+    if verbose:
+        print(f"  Running {n_rand} permutations (T-column method)...")
+    
+    # Get inverse permutation table
+    if use_cache:
+        inv_perm_table = get_cached_inverse_perm_table(
+            n_genes, n_rand, seed, verbose=verbose
+        )
+    else:
+        inv_perm_table = generate_inverse_permutation_table(n_genes, n_rand, seed)
+    
+    # Accumulators
+    aver = np.zeros((n_features, n_samples), dtype=np.float64)
+    aver_sq = np.zeros((n_features, n_samples), dtype=np.float64)
+    pvalue_counts = np.zeros((n_features, n_samples), dtype=np.float64)
+    abs_beta = np.abs(beta)
+    
+    # Permutation loop (Y stays unchanged!)
+    for i in range(n_rand):
+        inv_perm_idx = inv_perm_table[i]
+        
+        # T-column permutation
+        T_perm = T[:, inv_perm_idx]
+        
+        # Compute permuted beta
+        if is_sparse:
+            beta_raw_perm = (Y_csr.T @ T_perm.T).T
+            if sps.issparse(beta_raw_perm):
+                beta_raw_perm = beta_raw_perm.toarray()
+        else:
+            beta_raw_perm = T_perm @ Y_arr
+        
+        # Apply scaling (correction is constant!)
+        beta_perm = beta_raw_perm / sigma - correction
+        
+        # Accumulate statistics
+        pvalue_counts += (np.abs(beta_perm) >= abs_beta).astype(np.float64)
+        aver += beta_perm
+        aver_sq += beta_perm ** 2
+    
+    # --- Finalize statistics ---
+    if verbose:
+        print("  Finalizing statistics...")
+    
+    mean = aver / n_rand
+    var = (aver_sq / n_rand) - (mean ** 2)
+    se = np.sqrt(np.maximum(var, 0.0))
+    zscore = np.where(se > EPS, (beta - mean) / se, 0.0)
+    pvalue = (pvalue_counts + 1.0) / (n_rand + 1.0)
+    
+    return {
+        'beta': beta,
+        'se': se,
+        'zscore': zscore,
+        'pvalue': pvalue
+    }
 
 
 # =============================================================================

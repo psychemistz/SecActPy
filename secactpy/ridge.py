@@ -43,7 +43,12 @@ import time
 import warnings
 import gc
 
-from .rng import GSLRNG, generate_permutation_table
+from .rng import (
+    GSLRNG, 
+    generate_permutation_table, 
+    generate_inverse_permutation_table,
+    get_cached_inverse_perm_table,
+)
 
 __all__ = ['ridge', 'CUPY_AVAILABLE']
 
@@ -53,6 +58,7 @@ __all__ = ['ridge', 'CUPY_AVAILABLE']
 # =============================================================================
 
 CUPY_AVAILABLE = False
+CUPY_INIT_ERROR = None
 cp = None
 
 try:
@@ -64,7 +70,8 @@ try:
 except ImportError:
     pass
 except Exception as e:
-    warnings.warn(f"CuPy available but GPU initialization failed: {e}")
+    # Store the error but don't warn yet - only warn when GPU is actually requested
+    CUPY_INIT_ERROR = str(e)
 
 
 # =============================================================================
@@ -191,10 +198,12 @@ def ridge(
     if backend == "auto":
         backend = "cupy" if CUPY_AVAILABLE else "numpy"
     elif backend == "cupy" and not CUPY_AVAILABLE:
-        raise ImportError(
-            "CuPy backend requested but not available. "
-            "Install CuPy or use backend='numpy'."
-        )
+        error_msg = "CuPy backend requested but not available."
+        if CUPY_INIT_ERROR:
+            error_msg += f" GPU initialization failed: {CUPY_INIT_ERROR}"
+        else:
+            error_msg += " Install CuPy with: pip install cupy-cuda11x (or cupy-cuda12x)"
+        raise ImportError(error_msg)
     
     if verbose:
         print(f"  backend={backend}")
@@ -233,7 +242,12 @@ def _ridge_permutation_numpy(
     """
     NumPy implementation of ridge regression with permutation testing.
     
-    This is the reference implementation that matches RidgeR exactly.
+    Uses T-column permutation which is mathematically equivalent to Y-row
+    permutation but more efficient for GPU and sparse matrices:
+    
+        T[:, inv_perm] @ Y == T @ Y[perm, :]
+    
+    This produces identical results to RidgeR's Y-row permutation approach.
     """
     n_genes, n_features = X.shape
     n_samples = Y.shape[1]
@@ -262,12 +276,14 @@ def _ridge_permutation_numpy(
     
     beta = T @ Y  # (n_features, n_samples)
     
-    # --- Step 3: Permutation testing ---
+    # --- Step 3: Permutation testing with T-column permutation ---
     if verbose:
-        print(f"  running {n_rand} permutations...")
+        print(f"  running {n_rand} permutations (T-column method)...")
     
-    # Generate permutation table (matches RidgeR exactly)
-    perm_table = generate_permutation_table(n_genes, n_rand, seed)
+    # Generate inverse permutation table for T-column permutation
+    # T[:, inv_perm] @ Y == T @ Y[perm, :] (mathematically equivalent)
+    # Use cached table from /data/parks34/.cache/ridgesig_perm_tables
+    inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=verbose)
     
     # Accumulators
     aver = np.zeros((n_features, n_samples), dtype=np.float64)
@@ -275,15 +291,18 @@ def _ridge_permutation_numpy(
     pvalue_counts = np.zeros((n_features, n_samples), dtype=np.float64)
     abs_beta = np.abs(beta)
     
-    # Permutation loop
+    # Ensure T is contiguous for efficient column indexing
+    T = np.ascontiguousarray(T)
+    
+    # Permutation loop with T-column permutation
     for i in range(n_rand):
-        perm_idx = perm_table[i]
+        inv_perm_idx = inv_perm_table[i]
         
-        # Permute rows of Y
-        Y_perm = Y[perm_idx, :]
+        # Permute columns of T (equivalent to permuting rows of Y)
+        T_perm = T[:, inv_perm_idx]
         
-        # Compute permuted beta
-        beta_perm = T @ Y_perm
+        # Compute permuted beta (Y stays in place)
+        beta_perm = T_perm @ Y
         
         # Accumulate statistics
         pvalue_counts += (np.abs(beta_perm) >= abs_beta).astype(np.float64)
@@ -418,7 +437,10 @@ def _ridge_cupy(
     """
     CuPy GPU implementation of ridge regression with permutation testing.
     
-    Optimized for large-scale computation on GPU.
+    Uses T-column permutation for better GPU efficiency:
+        T[:, inv_perm] @ Y == T @ Y[perm, :]
+    
+    Y stays in place on GPU, only T column indices are shuffled.
     """
     if not CUPY_AVAILABLE or cp is None:
         raise RuntimeError("CuPy not available")
@@ -476,12 +498,14 @@ def _ridge_cupy(
     
     beta_gpu = T_gpu @ Y_gpu
     
-    # --- Step 3: Permutation testing on GPU ---
+    # --- Step 3: Permutation testing on GPU with T-column permutation ---
     if verbose:
-        print(f"  running {n_rand} permutations on GPU...")
+        print(f"  running {n_rand} permutations on GPU (T-column method)...")
     
-    # Generate permutation table on CPU (must match GSL exactly)
-    perm_table = generate_permutation_table(n_genes, n_rand, seed)
+    # Generate inverse permutation table on CPU (must match GSL exactly)
+    # T[:, inv_perm] @ Y == T @ Y[perm, :] (mathematically equivalent)
+    # Use cached table from /data/parks34/.cache/ridgesig_perm_tables
+    inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=verbose)
     
     # Accumulators on GPU
     aver = cp.zeros((n_features, n_samples), dtype=cp.float64)
@@ -496,21 +520,21 @@ def _ridge_cupy(
         batch_end = min(batch_start + batch_size, n_rand)
         
         for i in range(batch_start, batch_end):
-            perm_idx = perm_table[i]
-            perm_idx_gpu = cp.asarray(perm_idx, dtype=cp.int32)
+            inv_perm_idx = inv_perm_table[i]
+            inv_perm_idx_gpu = cp.asarray(inv_perm_idx, dtype=cp.intp)
             
-            # Permute rows of Y
-            Y_perm = Y_gpu[perm_idx_gpu, :]
+            # Permute columns of T (Y stays in place on GPU)
+            T_perm = T_gpu[:, inv_perm_idx_gpu]
             
             # Compute permuted beta
-            beta_perm = T_gpu @ Y_perm
+            beta_perm = T_perm @ Y_gpu
             
             # Accumulate statistics
             pvalue_counts += (cp.abs(beta_perm) >= abs_beta).astype(cp.float64)
             aver += beta_perm
             aver_sq += beta_perm ** 2
             
-            del perm_idx_gpu, Y_perm, beta_perm
+            del inv_perm_idx_gpu, T_perm, beta_perm
         
         # Free memory periodically
         cp.get_default_memory_pool().free_all_blocks()
@@ -598,6 +622,9 @@ def ridge_with_precomputed_T(
     """
     Ridge regression using precomputed projection matrix.
     
+    Uses T-column permutation for efficient computation:
+        T[:, inv_perm] @ Y == T @ Y[perm, :]
+    
     Useful for batch processing where the same X is used for multiple Y.
     
     Parameters
@@ -617,6 +644,7 @@ def ridge_with_precomputed_T(
         Results dictionary (same as ridge()).
     """
     Y = np.asarray(Y, dtype=np.float64)
+    T = np.ascontiguousarray(T)
     n_features, n_genes = T.shape
     n_samples = Y.shape[1]
     
@@ -633,8 +661,9 @@ def ridge_with_precomputed_T(
             "T-test requires X matrix. Use ridge() directly."
         )
     
-    # Permutation testing
-    perm_table = generate_permutation_table(n_genes, n_rand, seed)
+    # Permutation testing with T-column permutation
+    # Use cached table from /data/parks34/.cache/ridgesig_perm_tables
+    inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=False)
     
     aver = np.zeros((n_features, n_samples), dtype=np.float64)
     aver_sq = np.zeros((n_features, n_samples), dtype=np.float64)
@@ -642,9 +671,9 @@ def ridge_with_precomputed_T(
     abs_beta = np.abs(beta)
     
     for i in range(n_rand):
-        perm_idx = perm_table[i]
-        Y_perm = Y[perm_idx, :]
-        beta_perm = T @ Y_perm
+        inv_perm_idx = inv_perm_table[i]
+        T_perm = T[:, inv_perm_idx]
+        beta_perm = T_perm @ Y
         
         pvalue_counts += (np.abs(beta_perm) >= abs_beta).astype(np.float64)
         aver += beta_perm
