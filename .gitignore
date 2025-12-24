@@ -222,3 +222,4 @@ dataset/output/signature/ST/._*.csv
 
 dataset
 tests/._*.py
+secactpy/._*.py
