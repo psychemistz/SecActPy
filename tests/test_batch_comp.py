@@ -48,6 +48,7 @@ LAMBDA = 5e5
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "dataset")
 BULK_INPUT = os.path.join(DATASET_DIR, "input", "Ly86-Fc_vs_Vehicle_logFC.txt")
+COSMX_INPUT = os.path.join(DATASET_DIR, "input", "LIHC_CosMx_data.h5ad")
 
 
 def scale_columns(Y: np.ndarray) -> np.ndarray:
@@ -102,6 +103,57 @@ def load_real_bulk_data():
         df = pd.read_csv(BULK_INPUT, sep='\t', index_col=0)
         return df
     return None
+
+
+def load_cosmx_data(input_file, min_genes=50, verbose=True):
+    """Load CosMx data from h5ad file."""
+    import anndata as ad
+    from scipy import sparse
+    
+    if not os.path.exists(input_file):
+        if verbose:
+            print(f"   CosMx file not found: {input_file}")
+        return None
+    
+    adata = ad.read_h5ad(input_file)
+    
+    # Always use adata.X and adata.var_names (not .raw)
+    # The .raw layer may have different gene IDs
+    counts_matrix = adata.X
+    gene_names = list(adata.var_names)
+    cell_names = list(adata.obs_names)
+    
+    if verbose:
+        print(f"   Using adata.X (shape: {counts_matrix.shape})")
+        print(f"   Total genes: {len(gene_names)}")
+        print(f"   Total cells: {len(cell_names)}")
+        print(f"   Sample gene names: {gene_names[:10]}")
+    
+    # Apply QC filter
+    if sparse.issparse(counts_matrix):
+        genes_per_cell = np.asarray((counts_matrix > 0).sum(axis=1)).ravel()
+    else:
+        genes_per_cell = (counts_matrix > 0).sum(axis=1)
+    
+    keep_cells = genes_per_cell >= min_genes
+    n_kept = keep_cells.sum()
+    counts_matrix = counts_matrix[keep_cells, :]
+    cell_names = [c for c, k in zip(cell_names, keep_cells) if k]
+    
+    if verbose:
+        print(f"   Cells after QC (>={min_genes} genes): {n_kept}")
+    
+    # Return as sparse (genes × cells)
+    if sparse.issparse(counts_matrix):
+        counts_transposed = counts_matrix.T.tocsr()
+    else:
+        counts_transposed = sparse.csr_matrix(counts_matrix.T)
+    
+    return {
+        'counts': counts_transposed,
+        'gene_names': gene_names,
+        'cell_names': cell_names,
+    }
 
 
 def compare_results(result1: dict, result2: dict, name1: str, name2: str) -> dict:
@@ -518,6 +570,175 @@ def test_st_comparison(n_spots: int = 10000, use_gpu: bool = False):
     return all_pass
 
 
+def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
+    """
+    Test batch vs non-batch for real CosMx spatial transcriptomics data.
+    
+    Parameters
+    ----------
+    n_cells : int, optional
+        Number of cells to use. If None, use all cells.
+    use_gpu : bool
+        Whether to use GPU backend.
+    """
+    print("\n" + "=" * 70)
+    print(f"COSMX REAL DATA: Batch vs Non-Batch Comparison {'(GPU)' if use_gpu else '(CPU)'}")
+    print("=" * 70)
+    
+    backend = 'cupy' if use_gpu else 'numpy'
+    
+    # Load real signature matrix
+    print("\nLoading real SecAct signature matrix...")
+    sig_df = load_signature('secact')
+    sig_genes = set(sig_df.index)
+    print(f"  Signature: {sig_df.shape[0]} genes × {sig_df.shape[1]} proteins")
+    
+    # Load real CosMx data
+    print("\nLoading real CosMx data...")
+    cosmx_data = load_cosmx_data(COSMX_INPUT, min_genes=50, verbose=True)
+    
+    if cosmx_data is None:
+        print("  ERROR: CosMx data not found!")
+        print(f"  Expected at: {COSMX_INPUT}")
+        return False
+    
+    counts_sparse = cosmx_data['counts']  # (genes × cells)
+    gene_names = cosmx_data['gene_names']
+    cell_names = cosmx_data['cell_names']
+    
+    # Find overlapping genes with signature
+    print("\n  Checking gene overlap with signature...")
+    data_genes = set(gene_names)
+    overlap = sig_genes & data_genes
+    print(f"  Data genes: {len(data_genes)}")
+    print(f"  Signature genes: {len(sig_genes)}")
+    print(f"  Overlap: {len(overlap)}")
+    
+    if len(overlap) < 10:
+        print("  ERROR: Too few overlapping genes!")
+        print(f"  Sample data genes: {list(data_genes)[:10]}")
+        print(f"  Sample sig genes: {list(sig_genes)[:10]}")
+        return False
+    
+    # Subset to overlapping genes
+    overlap_list = sorted(list(overlap))
+    gene_idx = [gene_names.index(g) for g in overlap_list]
+    counts_subset = counts_sparse[gene_idx, :]
+    
+    # Subset signature to same genes
+    X = sig_df.loc[overlap_list].values.astype(np.float64)
+    n_genes, n_features = X.shape
+    
+    # Optionally subsample cells
+    n_total_cells = counts_subset.shape[1]
+    if n_cells is not None and n_cells < n_total_cells:
+        np.random.seed(42)
+        cell_idx = np.random.choice(n_total_cells, n_cells, replace=False)
+        counts_subset = counts_subset[:, cell_idx]
+        n_spots = n_cells
+    else:
+        n_spots = n_total_cells
+    
+    # Convert to dense for standard method
+    Y_raw_dense = counts_subset.toarray() if sps.issparse(counts_subset) else counts_subset
+    Y_sparse = sps.csr_matrix(Y_raw_dense) if not sps.issparse(counts_subset) else counts_subset
+    
+    nnz_pct = 100 * Y_sparse.nnz / (Y_sparse.shape[0] * Y_sparse.shape[1])
+    
+    print(f"\n  Final data shape: {Y_raw_dense.shape} (genes × cells)")
+    print(f"  Sparsity: {100 - nnz_pct:.1f}% zeros ({Y_sparse.nnz:,} non-zeros)")
+    print(f"  Memory (dense): {Y_raw_dense.nbytes / 1e6:.1f} MB")
+    print(f"  Memory (sparse): {(Y_sparse.data.nbytes + Y_sparse.indices.nbytes + Y_sparse.indptr.nbytes) / 1e6:.1f} MB")
+    
+    # Scale for standard method
+    Y_scaled = scale_columns(Y_raw_dense.astype(np.float64))
+    
+    print(f"\nTest setup:")
+    print(f"  n_genes: {n_genes}")
+    print(f"  n_features: {n_features}")
+    print(f"  n_cells: {n_spots}")
+    print(f"  n_rand: {N_RAND}")
+    print(f"  backend: {backend}")
+    
+    # =========================================================================
+    # Method 1: Standard ridge (non-batch, dense)
+    # =========================================================================
+    print(f"\n1. Standard ridge (non-batch, dense Y, {backend})...")
+    t_start = time.time()
+    result_std = ridge(
+        X, Y_scaled, 
+        lambda_=LAMBDA, 
+        n_rand=N_RAND, 
+        seed=SEED, 
+        backend=backend,
+        verbose=True
+    )
+    t_std = time.time() - t_start
+    print(f"   Total time: {t_std:.3f}s")
+    print(f"   Shape: {result_std['beta'].shape}")
+    
+    # =========================================================================
+    # Method 2: Batch processing (dense)
+    # =========================================================================
+    print(f"\n2. Batch processing (dense Y, {backend})...")
+    batch_size = max(1000, n_spots // 10)
+    t_start = time.time()
+    result_batch = ridge_batch(
+        X, Y_scaled,
+        lambda_=LAMBDA,
+        n_rand=N_RAND,
+        seed=SEED,
+        batch_size=batch_size,
+        backend=backend,
+        verbose=True
+    )
+    t_batch = time.time() - t_start
+    print(f"   Total time: {t_batch:.3f}s (batch_size={batch_size})")
+    print(f"   Shape: {result_batch['beta'].shape}")
+    
+    # =========================================================================
+    # Method 3: Sparse-preserving batch (sparse Y) - CPU only
+    # =========================================================================
+    print("\n3. Sparse-preserving batch (sparse Y, no densification, CPU)...")
+    
+    # Precompute from sparse
+    stats = precompute_population_stats(Y_sparse)
+    proj = precompute_projection_components(X, lambda_=LAMBDA)
+    
+    t_start = time.time()
+    result_sparse = ridge_batch_sparse_preserving(
+        proj, Y_sparse, stats,
+        n_rand=N_RAND,
+        seed=SEED,
+        use_cache=True,
+        verbose=True
+    )
+    t_sparse = time.time() - t_start
+    print(f"   Total time: {t_sparse:.3f}s")
+    print(f"   Shape: {result_sparse['beta'].shape}")
+    
+    # =========================================================================
+    # Compare results
+    # =========================================================================
+    print("\n" + "-" * 50)
+    print("COMPARISONS:")
+    
+    cmp1 = compare_results(result_std, result_batch, "Standard", "Batch")
+    cmp2 = compare_results(result_std, result_sparse, "Standard", "Sparse-preserving")
+    
+    # Summary
+    print("\n" + "-" * 50)
+    print("SUMMARY:")
+    print(f"  Standard ({backend}):   {t_std:.3f}s")
+    print(f"  Batch ({backend}):      {t_batch:.3f}s ({t_std/t_batch:.1f}x)" if t_batch > 0 else f"  Batch ({backend}):      {t_batch:.3f}s")
+    print(f"  Sparse-preserving: {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving: {t_sparse:.3f}s")
+    
+    all_pass = cmp1['pass'] and cmp2['pass']
+    print(f"\n  {'✓ ALL TESTS PASSED' if all_pass else '✗ SOME TESTS FAILED'}")
+    
+    return all_pass
+
+
 def test_large_scale_comparison(n_samples: int = 50000):
     """
     Test with large sample sizes to show batch processing benefits.
@@ -645,7 +866,8 @@ def main():
     parser = argparse.ArgumentParser(description="Batch vs Non-Batch Comparison Test (Real Datasets)")
     parser.add_argument('--bulk', action='store_true', help='Test bulk RNA-seq')
     parser.add_argument('--scrnaseq', action='store_true', help='Test scRNA-seq')
-    parser.add_argument('--st', action='store_true', help='Test spatial transcriptomics')
+    parser.add_argument('--st', action='store_true', help='Test spatial transcriptomics (simulated)')
+    parser.add_argument('--cosmx', action='store_true', help='Test real CosMx spatial transcriptomics')
     parser.add_argument('--large', action='store_true', help='Test large-scale processing')
     parser.add_argument('--all', action='store_true', help='Run all tests')
     parser.add_argument('--gpu', action='store_true', help='Also run GPU tests (requires CuPy)')
@@ -653,6 +875,7 @@ def main():
     parser.add_argument('--n-bulk', type=int, default=1000, help='Number of bulk samples')
     parser.add_argument('--n-cells', type=int, default=5000, help='Number of scRNA-seq cells')
     parser.add_argument('--n-spots', type=int, default=10000, help='Number of ST spots')
+    parser.add_argument('--n-cosmx', type=int, default=None, help='Number of CosMx cells (None=all)')
     parser.add_argument('--n-large', type=int, default=50000, help='Number of large-scale samples')
     parser.add_argument('--clear-cache', action='store_true', help='Clear permutation cache first')
     
@@ -665,7 +888,7 @@ def main():
         args.gpu_only = False
     
     # Default to all if nothing specified
-    if not any([args.bulk, args.scrnaseq, args.st, args.large, args.all]):
+    if not any([args.bulk, args.scrnaseq, args.st, args.cosmx, args.large, args.all]):
         args.all = True
     
     if args.clear_cache:
@@ -694,7 +917,10 @@ def main():
             results.append(("scRNA-seq (CPU)", test_scrnaseq_comparison(args.n_cells, use_gpu=False)))
         
         if args.st or args.all:
-            results.append(("ST (CPU)", test_st_comparison(args.n_spots, use_gpu=False)))
+            results.append(("ST Simulated (CPU)", test_st_comparison(args.n_spots, use_gpu=False)))
+        
+        if args.cosmx:
+            results.append(("CosMx Real (CPU)", test_cosmx_comparison(args.n_cosmx, use_gpu=False)))
         
         if args.large or args.all:
             results.append(("Large-scale (CPU)", test_large_scale_comparison(args.n_large)))
@@ -712,7 +938,10 @@ def main():
             results.append(("scRNA-seq (GPU)", test_scrnaseq_comparison(args.n_cells, use_gpu=True)))
         
         if args.st or args.all:
-            results.append(("ST (GPU)", test_st_comparison(args.n_spots, use_gpu=True)))
+            results.append(("ST Simulated (GPU)", test_st_comparison(args.n_spots, use_gpu=True)))
+        
+        if args.cosmx:
+            results.append(("CosMx Real (GPU)", test_cosmx_comparison(args.n_cosmx, use_gpu=True)))
     
     # Final summary
     print("\n" + "=" * 70)
