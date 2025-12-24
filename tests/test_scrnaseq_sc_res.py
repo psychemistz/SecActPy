@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Test Script: CosMx Spatial Transcriptomics Validation
+Test Script: Single-Cell Resolution scRNAseq Validation
 
-Validates SecActPy ST inference against RidgeR output for CosMx data.
+Validates SecActPy scRNAseq inference at single-cell resolution (per cell).
 
-Dataset: LIHC_CosMx_data.h5ad (single-cell resolution ST)
-Reference: R output from RidgeR::SecAct.activity.inference.ST
+Dataset: OV_scRNAseq_CD4.h5ad
+Reference: R output from RidgeR::SecAct.activity.inference.scRNAseq with is_single_cell_level=TRUE
 
 Usage:
-    python tests/test_cosmx.py
+    python tests/test_scrnaseq_sc_res.py
 
 Expected output:
     All arrays should match R output exactly (or within numerical tolerance).
@@ -19,12 +19,13 @@ import sys
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import time
 import argparse
 
 # Add package to path for development testing
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from secactpy import secact_activity_inference_st
+from secactpy import secact_activity_inference_scrnaseq
 
 
 # =============================================================================
@@ -34,18 +35,15 @@ from secactpy import secact_activity_inference_st
 # Paths (adjust as needed)
 PACKAGE_ROOT = Path(__file__).parent.parent
 DATA_DIR = PACKAGE_ROOT / "dataset"
-INPUT_FILE = DATA_DIR / "input" / "LIHC_CosMx_data.h5ad"
-OUTPUT_DIR = DATA_DIR / "output" / "signature" / "CosMx"
+INPUT_FILE = DATA_DIR / "input" / "OV_scRNAseq_CD4.h5ad"
+OUTPUT_DIR = DATA_DIR / "output" / "signature" / "scRNAseq_sc_res"
 
-# Parameters matching R command
-# SpaCET_obj <- SecAct.activity.inference.ST(inputProfile = SpaCET_obj, scale.factor = 1000, sigFilter=TRUE)
+# Parameters matching R defaults
+CELL_TYPE_COL = "Annotation"  # Match R's cellType_meta
 LAMBDA = 5e5
 NRAND = 1000
 SEED = 0
 GROUP_COR = 0.9
-SCALE_FACTOR = 1000  # CosMx uses 1000, not 1e5
-MIN_GENES = 50
-SIG_FILTER = True  # sigFilter=TRUE in R
 
 
 # =============================================================================
@@ -101,7 +99,7 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
             }
             continue
         
-        # Check row names
+        # Check row names (proteins)
         py_rows = set(py_arr.index)
         r_rows = set(r_arr.index)
         if py_rows != r_rows:
@@ -111,13 +109,9 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
                 'status': 'FAIL',
                 'message': f'Row name mismatch. Missing in Python: {len(missing_in_py)}, Missing in R: {len(missing_in_r)}'
             }
-            if len(missing_in_py) <= 5:
-                print(f"    Missing in Python: {missing_in_py}")
-            if len(missing_in_r) <= 5:
-                print(f"    Missing in R: {missing_in_r}")
             continue
         
-        # Check column names
+        # Check column names (cells)
         py_cols = set(py_arr.columns)
         r_cols = set(r_arr.columns)
         if py_cols != r_cols:
@@ -127,10 +121,6 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
                 'status': 'FAIL',
                 'message': f'Column name mismatch. Missing in Python: {len(missing_in_py)}, Missing in R: {len(missing_in_r)}'
             }
-            if len(missing_in_py) <= 5:
-                print(f"    Missing in Python columns: {list(missing_in_py)[:5]}")
-            if len(missing_in_r) <= 5:
-                print(f"    Missing in R columns: {list(missing_in_r)[:5]}")
             continue
         
         # Align by row and column names
@@ -175,21 +165,20 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
 
 def main(save_output=False):
     """
-    Run CosMx spatial transcriptomics inference.
+    Run single-cell resolution scRNAseq inference.
     
     Parameters
     ----------
     save_output : bool, default=False
-        If True, save results to h5ad file.
+        If True, save results to h5ad and HDF5 files.
     """
     print("=" * 70)
-    print("SecActPy CosMx Spatial Transcriptomics Validation Test")
+    print("SecActPy scRNAseq Single-Cell Resolution Validation Test")
     print("=" * 70)
     
     # Check if anndata is available
     try:
         import anndata as ad
-        from scipy import sparse
     except ImportError:
         print("ERROR: anndata is required for this test.")
         print("Install with: pip install anndata")
@@ -199,166 +188,161 @@ def main(save_output=False):
     print("\n1. Checking files...")
     if not INPUT_FILE.exists():
         print(f"   ERROR: Input file not found: {INPUT_FILE}")
-        print("   Please ensure the LIHC_CosMx_data.h5ad is in place.")
         return False
     print(f"   Input: {INPUT_FILE}")
     
     if not OUTPUT_DIR.exists():
-        print(f"   ERROR: Output directory not found: {OUTPUT_DIR}")
-        print("   Please run the R script to generate reference output first.")
-        return False
-    print(f"   Reference outputs: {OUTPUT_DIR}")
+        print(f"   Warning: Reference output directory not found: {OUTPUT_DIR}")
+        print("   Will run inference but skip validation.")
+        print("   To generate R reference, run:")
+        print("   ```R")
+        print("   library(RidgeR)")
+        print("   Seurat_obj <- readRDS('OV_scRNAseq_CD4.rds')")
+        print("   Seurat_obj <- SecAct.activity.inference.scRNAseq(Seurat_obj, cellType_meta='Annotation', is_single_cell_level=TRUE)")
+        print("   dir.create('dataset/output/signature/scRNAseq_sc_res', showWarnings=FALSE)")
+        print("   write.table(Seurat_obj@misc$SecAct_output$SecretedProteinActivity$beta, 'dataset/output/signature/scRNAseq_sc_res/beta.txt', quote=F)")
+        print("   # ... same for se, zscore, pvalue")
+        print("   ```")
+        validate = False
+    else:
+        print(f"   Reference outputs: {OUTPUT_DIR}")
+        validate = True
     
     # Load AnnData
-    print("\n2. Loading CosMx AnnData...")
+    print("\n2. Loading AnnData...")
     adata = ad.read_h5ad(INPUT_FILE)
     print(f"   Shape: {adata.shape} (cells × genes)")
-    print(f"   Obs columns: {list(adata.obs.columns)[:10]}...")
+    print(f"   Cell types: {adata.obs[CELL_TYPE_COL].nunique()}")
+    print(f"   Cells: {adata.n_obs}")
     
-    # Check for raw counts
-    if adata.raw is not None:
-        print(f"   Raw counts available: {adata.raw.X.shape}")
-        counts_matrix = adata.raw.X
-        gene_names = list(adata.raw.var_names)
-    else:
-        print("   Using adata.X")
-        counts_matrix = adata.X
-        gene_names = list(adata.var_names)
+    # Run single-cell level inference
+    print("\n3. Running SecActPy Single-Cell Resolution inference...")
+    start_time = time.time()
     
-    cell_names = list(adata.obs_names)
-    print(f"   Cells: {len(cell_names)}, Genes: {len(gene_names)}")
-    print(f"   Sample cell IDs: {cell_names[:5]}")
-    
-    # Apply QC filter (min_genes=50) - matching R's SpaCET.quality.control
-    print(f"\n   Applying QC filter (min_genes={MIN_GENES})...")
-    if sparse.issparse(counts_matrix):
-        genes_per_cell = np.asarray((counts_matrix > 0).sum(axis=1)).ravel()
-    else:
-        genes_per_cell = (counts_matrix > 0).sum(axis=1)
-    
-    keep_cells = genes_per_cell >= MIN_GENES
-    n_removed = (~keep_cells).sum()
-    print(f"   Removing {n_removed} cells with < {MIN_GENES} genes")
-    print(f"   Keeping {keep_cells.sum()} cells")
-    
-    # Subset
-    counts_matrix = counts_matrix[keep_cells, :]
-    cell_names = [c for c, k in zip(cell_names, keep_cells) if k]
-    
-    # Transpose to (genes × cells) for ST function
-    if sparse.issparse(counts_matrix):
-        counts_transposed = counts_matrix.T.tocsr()
-    else:
-        counts_transposed = counts_matrix.T
-    
-    # Create DataFrame (genes × cells)
-    # Note: Need to handle sparse matrix
-    if sparse.issparse(counts_transposed):
-        counts_df = pd.DataFrame.sparse.from_spmatrix(
-            counts_transposed,
-            index=gene_names,
-            columns=cell_names
-        )
-        # Convert to dense for ST function
-        counts_df = counts_df.sparse.to_dense()
-    else:
-        counts_df = pd.DataFrame(
-            counts_transposed,
-            index=gene_names,
-            columns=cell_names
-        )
-    
-    print(f"   Count matrix: {counts_df.shape} (genes × cells)")
-    
-    # Run Python inference
-    print("\n3. Running SecActPy ST inference (CosMx)...")
     try:
-        py_result = secact_activity_inference_st(
-            input_data=counts_df,
-            scale_factor=SCALE_FACTOR,
+        py_result = secact_activity_inference_scrnaseq(
+            adata,
+            cell_type_col=CELL_TYPE_COL,
+            is_single_cell_level=True,  # Single-cell resolution
             sig_matrix="secact",
             is_group_sig=True,
             is_group_cor=GROUP_COR,
             lambda_=LAMBDA,
             n_rand=NRAND,
             seed=SEED,
-            sig_filter=SIG_FILTER,
             verbose=True
         )
-        print(f"   Result shape: {py_result['beta'].shape}")
+        
+        elapsed = time.time() - start_time
+        print(f"   Completed in {elapsed:.1f} seconds")
+        print(f"   Result shape: {py_result['beta'].shape} (proteins × cells)")
         print(f"   Sample cell IDs: {list(py_result['beta'].columns)[:5]}")
+        
     except Exception as e:
         print(f"   ERROR: {e}")
         import traceback
         traceback.print_exc()
         return False
     
-    # Load R reference output
-    print("\n4. Loading R reference output...")
-    r_result = load_r_output(OUTPUT_DIR)
-    
-    if not r_result:
-        print("   ERROR: No R output files found!")
-        return False
-    
-    # Show R column names for comparison
-    if 'zscore' in r_result:
-        print(f"   R sample cells: {list(r_result['zscore'].columns)[:5]}")
-        print(f"   R shape: {r_result['zscore'].shape}")
-    
-    # Compare results
-    print("\n5. Comparing results...")
-    comparison = compare_results(py_result, r_result)
-    
-    print("\n" + "=" * 70)
-    print("RESULTS")
-    print("=" * 70)
-    
     all_passed = True
-    for name, result in comparison.items():
-        status = result['status']
-        message = result['message']
-        
-        if status == 'PASS':
-            print(f"  {name:8s}: ✓ PASS - {message}")
-        else:
-            print(f"  {name:8s}: ✗ {status} - {message}")
-            all_passed = False
     
-    print("\n" + "=" * 70)
-    if all_passed:
-        print("ALL TESTS PASSED! ✓")
-        print("SecActPy CosMx ST produces identical results to RidgeR.")
-    else:
-        print("SOME TESTS FAILED! ✗")
-        print("Check the detailed output above for discrepancies.")
-    print("=" * 70)
+    if validate:
+        # Load R reference output
+        print("\n4. Loading R reference output...")
+        r_result = load_r_output(OUTPUT_DIR)
+        
+        if not r_result:
+            print("   Warning: No R output files found! Skipping validation.")
+            validate = False
+        else:
+            # Show R column names for comparison
+            if 'zscore' in r_result:
+                print(f"   R sample cells: {list(r_result['zscore'].columns)[:5]}")
+            
+            # Compare results
+            print("\n5. Comparing results...")
+            comparison = compare_results(py_result, r_result)
+            
+            print("\n" + "=" * 70)
+            print("RESULTS")
+            print("=" * 70)
+            
+            for name, result in comparison.items():
+                status = result['status']
+                message = result['message']
+                
+                if status == 'PASS':
+                    print(f"  {name:8s}: ✓ PASS - {message}")
+                else:
+                    print(f"  {name:8s}: ✗ {status} - {message}")
+                    all_passed = False
+            
+            print("\n" + "=" * 70)
+            if all_passed:
+                print("ALL TESTS PASSED! ✓")
+                print("SecActPy scRNAseq (single-cell resolution) produces identical results to RidgeR.")
+            else:
+                print("SOME TESTS FAILED! ✗")
+                print("Check the detailed output above for discrepancies.")
+            print("=" * 70)
+    
+    if not validate:
+        print("\n" + "=" * 70)
+        print("INFERENCE COMPLETE (validation skipped)")
+        print("=" * 70)
     
     # Show sample output
-    print("\n6. Sample output (first 5 rows, first 3 columns of zscore):")
-    cols = py_result['zscore'].columns[:3]
-    print(py_result['zscore'].iloc[:5][cols])
+    step_num = 6 if validate else 4
+    print(f"\n{step_num}. Sample output (first 5 proteins, first 5 cells):")
+    print(py_result['zscore'].iloc[:5, :5])
     
-    # Optional: Save results to h5ad
+    # Activity statistics by cell type
+    step_num += 1
+    print(f"\n{step_num}. Activity statistics by cell type:")
+    cell_types = adata.obs[CELL_TYPE_COL].values
+    cell_names = list(adata.obs_names)
+    
+    for ct in sorted(set(cell_types)):
+        mask = cell_types == ct
+        ct_cells = [c for c, m in zip(cell_names, mask) if m]
+        ct_data = py_result['zscore'][ct_cells]
+        
+        mean_activity = ct_data.mean(axis=1).sort_values(ascending=False)
+        
+        print(f"\n   {ct} ({len(ct_cells)} cells):")
+        print(f"     Top 3 active: {', '.join(mean_activity.head(3).index)}")
+        print(f"     Z-score range: [{mean_activity.min():.2f}, {mean_activity.max():.2f}]")
+    
+    # Save results
     if save_output:
-        print("\n7. Saving results to h5ad...")
+        step_num += 1
+        print(f"\n{step_num}. Saving results...")
         try:
-            from secactpy.io import save_st_results_to_h5ad
+            from secactpy.io import add_activity_to_anndata, save_results
             
-            output_h5ad = PACKAGE_ROOT / "dataset" / "output" / "LIHC_CosMx_with_activity.h5ad"
+            # Add activity to AnnData
+            adata = add_activity_to_anndata(adata, py_result)
             
-            # counts_df is already (genes × cells)
-            save_st_results_to_h5ad(
-                counts=counts_df.values,
-                activity_results=py_result,
-                output_path=output_h5ad,
-                gene_names=list(counts_df.index),
-                cell_names=list(counts_df.columns),
-                platform="CosMx"
-            )
-            print(f"   Saved to: {output_h5ad}")
+            # Save h5ad
+            output_h5ad = PACKAGE_ROOT / "dataset" / "output" / "scRNAseq_sc_res_activity.h5ad"
+            adata.write_h5ad(output_h5ad)
+            print(f"   Saved h5ad to: {output_h5ad}")
+            
+            # Also save as HDF5 for easy loading
+            output_h5 = PACKAGE_ROOT / "dataset" / "output" / "scRNAseq_sc_res_activity.h5"
+            results_to_save = {
+                'beta': py_result['beta'].values,
+                'se': py_result['se'].values,
+                'zscore': py_result['zscore'].values,
+                'pvalue': py_result['pvalue'].values,
+                'feature_names': list(py_result['beta'].index),
+                'sample_names': list(py_result['beta'].columns),
+            }
+            save_results(results_to_save, output_h5)
+            print(f"   Saved HDF5 to: {output_h5}")
+            
         except Exception as e:
-            print(f"   Could not save h5ad: {e}")
+            print(f"   Could not save results: {e}")
     
     return all_passed
 
@@ -366,12 +350,12 @@ def main(save_output=False):
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="SecActPy CosMx Spatial Transcriptomics Validation"
+        description="SecActPy scRNAseq Single-Cell Resolution Validation"
     )
     parser.add_argument(
         '--save',
         action='store_true',
-        help='Save results to h5ad file'
+        help='Save results to h5ad and HDF5 files'
     )
     return parser.parse_args()
 

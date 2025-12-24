@@ -160,7 +160,7 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
 # Main Test
 # =============================================================================
 
-def main(input_file=None, gene_col=None, validate=True):
+def main(input_file=None, gene_col=None, validate=True, save_output=False):
     """
     Run bulk RNA-seq inference.
     
@@ -172,6 +172,8 @@ def main(input_file=None, gene_col=None, validate=True):
         Column containing gene symbols (if not row index).
     validate : bool, default=True
         If True, compare against R reference output.
+    save_output : bool, default=False
+        If True, save results to HDF5 file.
     """
     print("=" * 70)
     print("SecActPy Bulk RNA-seq Validation Test")
@@ -284,28 +286,29 @@ def main(input_file=None, gene_col=None, validate=True):
     print(f"\n{step_num}. Sample output (first 10 rows of zscore):")
     print(py_result['zscore'].head(10))
     
-    # Optional: Save results to h5ad
-    step_num = 7 if validate else 5
-    print(f"\n{step_num}. Saving results to h5ad...")
-    try:
-        from secactpy.io import save_results
-        
-        output_h5ad = PACKAGE_ROOT / "dataset" / "output" / "bulk_with_activity.h5"
-        
-        # Convert DataFrames to arrays for save_results
-        results_to_save = {
-            'beta': py_result['beta'].values,
-            'se': py_result['se'].values,
-            'zscore': py_result['zscore'].values,
-            'pvalue': py_result['pvalue'].values,
-            'feature_names': list(py_result['beta'].index),
-            'sample_names': list(py_result['beta'].columns),
-        }
-        
-        save_results(results_to_save, output_h5ad)
-        print(f"   Saved to: {output_h5ad}")
-    except Exception as e:
-        print(f"   Could not save h5ad: {e}")
+    # Optional: Save results to h5
+    if save_output:
+        step_num = 7 if validate else 5
+        print(f"\n{step_num}. Saving results to HDF5...")
+        try:
+            from secactpy.io import save_results
+            
+            output_h5 = PACKAGE_ROOT / "dataset" / "output" / "bulk_with_activity.h5"
+            
+            # Convert DataFrames to arrays for save_results
+            results_to_save = {
+                'beta': py_result['beta'].values,
+                'se': py_result['se'].values,
+                'zscore': py_result['zscore'].values,
+                'pvalue': py_result['pvalue'].values,
+                'feature_names': list(py_result['beta'].index),
+                'sample_names': list(py_result['beta'].columns),
+            }
+            
+            save_results(results_to_save, output_h5)
+            print(f"   Saved to: {output_h5}")
+        except Exception as e:
+            print(f"   Could not save: {e}")
     
     return all_passed
 
@@ -365,6 +368,11 @@ Input file structure:
         action='store_true',
         help='Skip validation against R reference output'
     )
+    parser.add_argument(
+        '--save',
+        action='store_true',
+        help='Save results to HDF5 file'
+    )
     
     return parser.parse_args()
 
@@ -383,6 +391,7 @@ if __name__ == "__main__":
     success = main(
         input_file=args.input_file,
         gene_col=gene_col,
-        validate=not args.no_validate
+        validate=not args.no_validate,
+        save_output=args.save
     )
     sys.exit(0 if success else 1)

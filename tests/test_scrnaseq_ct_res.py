@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Test Script: scRNAseq Validation
+Test Script: Cell-Type Resolution scRNAseq Validation (Pseudo-bulk)
 
-Validates SecActPy scRNAseq inference against RidgeR output.
+Validates SecActPy scRNAseq inference at cell-type resolution (pseudo-bulk).
 
 Dataset: OV_scRNAseq_CD4.h5ad (converted from Seurat RDS)
-Reference: R output from RidgeR::SecAct.activity.inference.scRNAseq
+Reference: R output from RidgeR::SecAct.activity.inference.scRNAseq with is_single_cell_level=FALSE
 
 Usage:
-    python tests/test_scrnaseq.py
+    python tests/test_scrnaseq_ct_res.py
 
 Expected output:
     All arrays should match R output exactly (or within numerical tolerance).
@@ -19,6 +19,7 @@ import sys
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import argparse
 
 # Add package to path for development testing
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -34,14 +35,14 @@ from secactpy import secact_activity_inference_scrnaseq
 PACKAGE_ROOT = Path(__file__).parent.parent
 DATA_DIR = PACKAGE_ROOT / "dataset"
 INPUT_FILE = DATA_DIR / "input" / "OV_scRNAseq_CD4.h5ad"
-OUTPUT_DIR = DATA_DIR / "output" / "signature" / "scRNAseq"
+OUTPUT_DIR = DATA_DIR / "output" / "signature" / "scRNAseq_ct_res"
 
 # Parameters matching R defaults
 LAMBDA = 5e5
 NRAND = 1000
 SEED = 0
 GROUP_COR = 0.9
-CELL_TYPE_COL = "Annotation"
+CELL_TYPE_COL = "Annotation"  # Match R's cellType_meta
 
 
 # =============================================================================
@@ -165,9 +166,17 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
 # Main Test
 # =============================================================================
 
-def main():
+def main(save_output=False):
+    """
+    Run cell-type resolution scRNAseq inference.
+    
+    Parameters
+    ----------
+    save_output : bool, default=False
+        If True, save results to HDF5 file.
+    """
     print("=" * 70)
-    print("SecActPy scRNAseq Validation Test")
+    print("SecActPy scRNAseq Cell-Type Resolution (Pseudo-bulk) Validation Test")
     print("=" * 70)
     
     # Check if anndata is available
@@ -269,7 +278,7 @@ def main():
     print("\n" + "=" * 70)
     if all_passed:
         print("ALL TESTS PASSED! ✓")
-        print("SecActPy scRNAseq produces identical results to RidgeR.")
+        print("SecActPy scRNAseq (cell-type resolution) produces identical results to RidgeR.")
     else:
         print("SOME TESTS FAILED! ✗")
         print("Check the detailed output above for discrepancies.")
@@ -280,43 +289,54 @@ def main():
     cols = py_result['zscore'].columns[:3]
     print(py_result['zscore'].iloc[:5][cols])
     
-    # Optional: Save results to h5ad
-    if all_passed:
-        print("\n7. Saving results to h5ad...")
+    # Optional: Save results
+    if save_output:
+        print("\n7. Saving results...")
         try:
-            from secactpy.io import save_st_results_to_h5ad
-            from scipy import sparse
+            from secactpy.io import save_results
             
-            # Get counts (transposed to genes × cells for the function)
-            if adata.raw is not None:
-                counts = adata.raw.X
-            else:
-                counts = adata.X
+            output_h5 = PACKAGE_ROOT / "dataset" / "output" / "scRNAseq_ct_res_activity.h5"
             
-            # Transpose to (genes × cells)
-            if sparse.issparse(counts):
-                counts_t = counts.T.tocsr()
-            else:
-                counts_t = counts.T
+            # For pseudo-bulk analysis, activity results are per cell-type, not per cell
+            # So we save just the activity results (not combined with cell-level counts)
+            results_to_save = {
+                'beta': py_result['beta'].values,
+                'se': py_result['se'].values,
+                'zscore': py_result['zscore'].values,
+                'pvalue': py_result['pvalue'].values,
+                'feature_names': list(py_result['beta'].index),  # proteins
+                'sample_names': list(py_result['beta'].columns),  # cell types
+            }
             
-            output_h5ad = PACKAGE_ROOT / "dataset" / "output" / "scRNAseq_with_activity.h5ad"
+            save_results(results_to_save, output_h5)
+            print(f"   Saved activity results to: {output_h5}")
+            print(f"   Shape: {py_result['beta'].shape} (proteins × cell_types)")
             
-            save_st_results_to_h5ad(
-                counts=counts_t,
-                activity_results=py_result,
-                output_path=output_h5ad,
-                gene_names=list(adata.raw.var_names if adata.raw else adata.var_names),
-                cell_names=list(adata.obs_names),
-                metadata=adata.obs[[CELL_TYPE_COL]],
-                platform="scRNAseq"
-            )
-            print(f"   Saved to: {output_h5ad}")
+            # Also save as CSV for easy viewing
+            csv_path = PACKAGE_ROOT / "dataset" / "output" / "scRNAseq_ct_res_zscore.csv"
+            py_result['zscore'].to_csv(csv_path)
+            print(f"   Saved z-scores to: {csv_path}")
+            
         except Exception as e:
-            print(f"   Could not save h5ad: {e}")
+            print(f"   Could not save results: {e}")
     
     return all_passed
 
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="SecActPy scRNAseq Cell-Type Resolution (Pseudo-bulk) Validation"
+    )
+    parser.add_argument(
+        '--save',
+        action='store_true',
+        help='Save results to HDF5 and CSV files'
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    success = main()
+    args = parse_args()
+    success = main(save_output=args.save)
     sys.exit(0 if success else 1)
