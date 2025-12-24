@@ -981,20 +981,56 @@ def secact_activity_inference(
             print(f"  Grouped into {X.shape[1]} signature groups")
     
     # --- Step 5: Find overlapping genes ---
-    common_genes = Y.index.intersection(X.index)
+    # Standardize gene names for matching (uppercase, no version numbers)
+    def standardize_gene(g):
+        g = str(g).upper().strip()
+        # Remove version numbers (e.g., "GENE.1" -> "GENE")
+        if '.' in g:
+            g = g.split('.')[0]
+        return g
+    
+    # Create mapping from standardized to original names
+    Y_gene_map = {standardize_gene(g): g for g in Y.index}
+    X_gene_map = {standardize_gene(g): g for g in X.index}
+    
+    # Find overlap on standardized names
+    Y_genes_std = set(Y_gene_map.keys())
+    X_genes_std = set(X_gene_map.keys())
+    common_genes_std = Y_genes_std.intersection(X_genes_std)
     
     if verbose:
-        print(f"  Common genes: {len(common_genes)}")
+        print(f"  Expression genes: {len(Y.index)}")
+        print(f"  Signature genes: {len(X.index)}")
+        print(f"  Common genes (standardized): {len(common_genes_std)}")
+        if len(common_genes_std) == 0:
+            print(f"  DEBUG: Sample expression genes: {list(Y.index[:5])}")
+            print(f"  DEBUG: Sample signature genes: {list(X.index[:5])}")
+            print(f"  DEBUG: Sample expr standardized: {list(Y_genes_std)[:5]}")
+            print(f"  DEBUG: Sample sig standardized: {list(X_genes_std)[:5]}")
     
-    if len(common_genes) < 2:
+    if len(common_genes_std) < 2:
         raise ValueError(
-            f"Too few overlapping genes ({len(common_genes)}) between expression and signature matrices! "
+            f"Too few overlapping genes ({len(common_genes_std)}) between expression and signature matrices! "
+            f"Expression has {len(Y.index)} genes, signature has {len(X.index)} genes. "
+            f"Sample expression genes: {list(Y.index[:5])}. "
+            f"Sample signature genes: {list(X.index[:5])}. "
             "Check that gene identifiers match (e.g., both use gene symbols)."
         )
     
+    # Get original gene names from Y (expression) for the common genes
+    common_genes = [Y_gene_map[g] for g in common_genes_std if g in Y_gene_map]
+    
     # --- Step 6: Subset to common genes ---
-    X_aligned = X.loc[common_genes].astype(np.float64)
+    # Use Y's gene names for Y, and map to X's gene names for X
     Y_aligned = Y.loc[common_genes].astype(np.float64)
+    
+    # Map expression genes to signature genes (they may have slightly different casing)
+    X_genes_for_common = [X_gene_map[standardize_gene(g)] for g in common_genes]
+    X_aligned = X.loc[X_genes_for_common].astype(np.float64)
+    
+    # Ensure indices match for downstream operations
+    X_aligned.index = common_genes
+    Y_aligned.index = common_genes
     
     # --- Step 7: Scale (z-score normalize columns) ---
     # R's scale() function: (x - mean) / sd where sd uses n-1 denominator (ddof=1)

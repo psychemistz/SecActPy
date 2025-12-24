@@ -29,7 +29,7 @@ import time
 # Add package to path for development testing
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from secactpy import secact_activity_inference_st, load_visium_10x
+from secactpy import secact_activity_inference_st, load_visium_10x, load_signature
 from secactpy.ridge import CUPY_AVAILABLE
 
 
@@ -107,22 +107,24 @@ def compare_results(cpu_result: dict, gpu_result: dict, tolerance: float = 1e-8)
     return comparison
 
 
-def load_cosmx_data(input_file, min_genes=50):
+def load_cosmx_data(input_file, min_genes=50, verbose=True):
     """Load CosMx data from h5ad file."""
     import anndata as ad
     from scipy import sparse
     
     adata = ad.read_h5ad(input_file)
     
-    # Get counts
-    if adata.raw is not None:
-        counts_matrix = adata.raw.X
-        gene_names = list(adata.raw.var_names)
-    else:
-        counts_matrix = adata.X
-        gene_names = list(adata.var_names)
-    
+    # Always use adata.X and adata.var_names (not .raw)
+    # The .raw layer may have different gene IDs
+    counts_matrix = adata.X
+    gene_names = list(adata.var_names)
     cell_names = list(adata.obs_names)
+    
+    if verbose:
+        print(f"   Using adata.X (shape: {counts_matrix.shape})")
+        print(f"   Total genes: {len(gene_names)}")
+        print(f"   Total cells: {len(cell_names)}")
+        print(f"   Sample gene names: {gene_names[:10]}")
     
     # Apply QC filter
     if sparse.issparse(counts_matrix):
@@ -131,8 +133,12 @@ def load_cosmx_data(input_file, min_genes=50):
         genes_per_cell = (counts_matrix > 0).sum(axis=1)
     
     keep_cells = genes_per_cell >= min_genes
+    n_kept = keep_cells.sum()
     counts_matrix = counts_matrix[keep_cells, :]
     cell_names = [c for c, k in zip(cell_names, keep_cells) if k]
+    
+    if verbose:
+        print(f"   Cells after QC (>={min_genes} genes): {n_kept}")
     
     # Transpose to (genes × cells)
     if sparse.issparse(counts_matrix):
@@ -170,8 +176,13 @@ def main(cosmx=False, save_output=False):
     # Check GPU availability
     print("\n1. Checking GPU availability...")
     if not CUPY_AVAILABLE:
-        print("   ERROR: CuPy is not available!")
-        print("   Install with: pip install cupy-cuda11x  # or cupy-cuda12x")
+        from secactpy.ridge import CUPY_INIT_ERROR
+        print("   ERROR: GPU is not available!")
+        if CUPY_INIT_ERROR:
+            print(f"   Reason: {CUPY_INIT_ERROR}")
+        else:
+            print("   CuPy is not installed.")
+            print("   Install with: pip install cupy-cuda11x  # or cupy-cuda12x")
         print("   Skipping GPU test.")
         return False
     
@@ -194,10 +205,10 @@ def main(cosmx=False, save_output=False):
             return False
         print(f"   Input: {COSMX_INPUT}")
         
-        input_data = load_cosmx_data(COSMX_INPUT, min_genes=COSMX_MIN_GENES)
+        input_data = load_cosmx_data(COSMX_INPUT, min_genes=COSMX_MIN_GENES, verbose=True)
         scale_factor = COSMX_SCALE_FACTOR
         sig_filter = True
-        print(f"   Shape: {input_data.shape} (genes × cells)")
+        print(f"   Final shape: {input_data.shape} (genes × cells)")
     else:
         if not VISIUM_INPUT.exists():
             print(f"   ERROR: Input directory not found: {VISIUM_INPUT}")
@@ -208,6 +219,47 @@ def main(cosmx=False, save_output=False):
         scale_factor = VISIUM_SCALE_FACTOR
         sig_filter = False
         print(f"   Spots: {len(input_data['spot_names'])}")
+    
+    # Check gene overlap with signature
+    print("\n   Checking gene overlap with signature...")
+    sig_df = load_signature("secact")
+    sig_genes = set(sig_df.index)
+    
+    if isinstance(input_data, pd.DataFrame):
+        data_genes = set(input_data.index)
+    else:
+        data_genes = set(input_data.get('gene_names', []))
+    
+    overlap = sig_genes & data_genes
+    print(f"   Signature genes: {len(sig_genes)}")
+    print(f"   Data genes: {len(data_genes)}")
+    print(f"   Overlap: {len(overlap)}")
+    
+    if len(overlap) == 0:
+        print("\n   ERROR: No overlapping genes!")
+        print(f"   Sample signature genes: {list(sig_genes)[:5]}")
+        print(f"   Sample data genes: {list(data_genes)[:5]}")
+        
+        # Try case-insensitive matching
+        sig_genes_upper = {g.upper(): g for g in sig_genes}
+        data_genes_upper = {g.upper(): g for g in data_genes}
+        case_overlap = set(sig_genes_upper.keys()) & set(data_genes_upper.keys())
+        
+        if len(case_overlap) > 0:
+            print(f"\n   Case-insensitive overlap: {len(case_overlap)}")
+            print("   Gene names may have case mismatch. Converting data gene names to match signature...")
+            
+            # Create mapping from data genes to signature genes
+            gene_mapping = {data_genes_upper[g]: sig_genes_upper[g] for g in case_overlap}
+            
+            if isinstance(input_data, pd.DataFrame):
+                input_data.index = [gene_mapping.get(g, g) for g in input_data.index]
+                data_genes = set(input_data.index)
+                overlap = sig_genes & data_genes
+                print(f"   New overlap: {len(overlap)}")
+            
+        if len(overlap) == 0:
+            return False
     
     # Run CPU inference
     print("\n3. Running CPU inference...")
