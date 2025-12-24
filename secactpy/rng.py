@@ -5,9 +5,21 @@ This module provides an RNG that produces identical permutation sequences
 to GSL's MT19937 as used in RidgeR. This is essential for reproducing
 exact p-values and z-scores from the R package.
 
+IMPORTANT - GSL Seed Behavior:
+------------------------------
+GSL treats seed=0 specially by using 4357 as the actual seed value.
+This is documented in GSL's source code (rng/mt.c):
+
+    if (s == 0)
+        s = 4357;   /* the default seed is 4357 */
+
+This module replicates this behavior exactly, so:
+- GSLRNG(seed=0) internally uses seed=4357
+- This ensures identical results between Python and R/GSL
+
 RidgeR Algorithm (from C code):
 -------------------------------
-1. Initialize MT19937 with seed (default: 0)
+1. Initialize MT19937 with seed (default: 0, which becomes 4357)
 2. Initialize array [0, 1, 2, ..., n-1]
 3. For each permutation:
    a. Fisher-Yates shuffle the array (cumulative - each shuffle starts from previous state)
@@ -27,7 +39,7 @@ Usage:
     >>> from secactpy.rng import GSLRNG, generate_permutation_table
     >>> 
     >>> # Generate permutation table matching RidgeR
-    >>> rng = GSLRNG(seed=0)
+    >>> rng = GSLRNG(seed=0)  # Uses 4357 internally, matching GSL
     >>> table = rng.permutation_table(n=1000, n_perm=1000)
     >>> 
     >>> # Or use convenience function
@@ -36,6 +48,7 @@ Usage:
 References:
 -----------
 - GSL: https://www.gnu.org/software/gsl/doc/html/rng.html
+- GSL MT19937 source: https://git.savannah.gnu.org/cgit/gsl.git/tree/rng/mt.c
 - MT19937: https://en.wikipedia.org/wiki/Mersenne_Twister
 - RidgeR source: generate_permutation_table() in ridger.c
 """
@@ -43,7 +56,40 @@ References:
 import numpy as np
 from typing import Optional, Tuple
 
-__all__ = ['GSLRNG', 'generate_permutation_table']
+__all__ = [
+    'GSLRNG', 
+    'generate_permutation_table', 
+    'generate_inverse_permutation_table',
+    'get_cached_inverse_perm_table',
+    'get_cached_perm_table',
+    'clear_perm_cache',
+    'list_cached_tables',
+    'DEFAULT_CACHE_DIR',
+]
+
+
+# =============================================================================
+# Cache Configuration
+# =============================================================================
+
+import os
+import hashlib
+
+DEFAULT_CACHE_DIR = "/data/parks34/.cache/ridgesig_perm_tables"
+
+
+def _ensure_cache_dir(cache_dir: str = None) -> str:
+    """Ensure cache directory exists."""
+    if cache_dir is None:
+        cache_dir = os.environ.get('SECACTPY_CACHE_DIR', DEFAULT_CACHE_DIR)
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def _get_cache_filename(n: int, n_perm: int, seed: int, inverse: bool) -> str:
+    """Generate cache filename."""
+    prefix = "inv_perm" if inverse else "perm"
+    return f"{prefix}_n{n}_nperm{n_perm}_seed{seed}.npy"
 
 
 # =============================================================================
@@ -255,6 +301,50 @@ class GSLRNG:
         
         return table
     
+    def inverse_permutation_table(self, n: int, n_perm: int) -> np.ndarray:
+        """
+        Generate inverse permutation table for T-column permutation.
+        
+        This generates the inverse of each permutation from permutation_table().
+        Used for T-column permutation which is equivalent to Y-row permutation:
+        
+            T[:, inv_perm] @ Y == T @ Y[perm, :]
+        
+        Where inv_perm[perm] = arange(n).
+        
+        Parameters
+        ----------
+        n : int
+            Number of elements to permute (e.g., number of genes).
+        n_perm : int
+            Number of permutations to generate.
+        
+        Returns
+        -------
+        np.ndarray, shape (n_perm, n), dtype intp
+            Each row is the inverse permutation.
+            
+        Notes
+        -----
+        For permutation perm, the inverse inv_perm satisfies:
+        - inv_perm[perm[i]] = i for all i
+        - perm[inv_perm[j]] = j for all j
+        
+        This allows T-column permutation (GPU/sparse-friendly) to produce
+        identical results to Y-row permutation (R's approach).
+        """
+        table = np.zeros((n_perm, n), dtype=np.intp)
+        arr = np.arange(n, dtype=np.int32)
+        
+        for i in range(n_perm):
+            self.shuffle_inplace(arr)
+            # Compute inverse: inv_perm[arr[j]] = j
+            inv_perm = np.empty(n, dtype=np.intp)
+            inv_perm[arr] = np.arange(n)
+            table[i] = inv_perm
+        
+        return table
+    
     def reset(self, seed: Optional[int] = None) -> None:
         """
         Reset RNG to initial state.
@@ -307,6 +397,277 @@ def generate_permutation_table(
     """
     rng = GSLRNG(seed)
     return rng.permutation_table(n, n_perm)
+
+
+def generate_inverse_permutation_table(
+    n: int,
+    n_perm: int,
+    seed: int = 0
+) -> np.ndarray:
+    """
+    Generate inverse permutation table for T-column permutation.
+    
+    This generates the inverse of each permutation, enabling T-column
+    permutation which is mathematically equivalent to Y-row permutation:
+    
+        T[:, inv_perm] @ Y == T @ Y[perm, :]
+    
+    T-column permutation is more efficient for:
+    - GPU computation (Y stays in place on device)
+    - Sparse Y matrices (no need to permute sparse rows)
+    
+    Parameters
+    ----------
+    n : int
+        Number of elements to permute.
+    n_perm : int
+        Number of permutations.
+    seed : int, default=0
+        Random seed. Use 0 for RidgeR compatibility.
+    
+    Returns
+    -------
+    np.ndarray, shape (n_perm, n), dtype intp
+        Inverse permutation table.
+    
+    Examples
+    --------
+    >>> inv_table = generate_inverse_permutation_table(100, 1000, seed=0)
+    >>> inv_table.shape
+    (1000, 100)
+    
+    >>> # Verify equivalence
+    >>> perm_table = generate_permutation_table(100, 1000, seed=0)
+    >>> inv_table = generate_inverse_permutation_table(100, 1000, seed=0)
+    >>> perm = perm_table[0]
+    >>> inv_perm = inv_table[0]
+    >>> np.all(inv_perm[perm] == np.arange(100))  # True
+    """
+    rng = GSLRNG(seed)
+    return rng.inverse_permutation_table(n, n_perm)
+
+
+# =============================================================================
+# Cached Permutation Tables
+# =============================================================================
+
+def get_cached_perm_table(
+    n: int,
+    n_perm: int,
+    seed: int = 0,
+    cache_dir: str = None,
+    force_regenerate: bool = False,
+    verbose: bool = True
+) -> np.ndarray:
+    """
+    Get permutation table, loading from cache if available.
+    
+    Parameters
+    ----------
+    n : int
+        Number of elements to permute.
+    n_perm : int
+        Number of permutations.
+    seed : int, default=0
+        Random seed.
+    cache_dir : str, optional
+        Cache directory. Default: /data/parks34/.cache/ridgesig_perm_tables
+    force_regenerate : bool, default=False
+        If True, regenerate even if cache exists.
+    verbose : bool, default=True
+        Print progress messages.
+        
+    Returns
+    -------
+    np.ndarray, shape (n_perm, n), dtype int32
+        Permutation table.
+    """
+    import time
+    
+    cache_dir = _ensure_cache_dir(cache_dir)
+    cache_file = os.path.join(cache_dir, _get_cache_filename(n, n_perm, seed, inverse=False))
+    
+    # Try to load from cache
+    if not force_regenerate and os.path.exists(cache_file):
+        try:
+            if verbose:
+                print(f"  Loading cached permutation table from {cache_file}")
+            table = np.load(cache_file)
+            if table.shape == (n_perm, n):
+                if verbose:
+                    print(f"  Loaded: shape={table.shape}")
+                return table
+            else:
+                if verbose:
+                    print(f"  Cache shape mismatch: {table.shape} != ({n_perm}, {n})")
+        except Exception as e:
+            if verbose:
+                print(f"  Failed to load cache: {e}")
+    
+    # Generate table
+    if verbose:
+        print(f"  Generating permutation table (n={n}, n_perm={n_perm}, seed={seed})...")
+    
+    t_start = time.time()
+    table = generate_permutation_table(n, n_perm, seed)
+    t_gen = time.time() - t_start
+    
+    if verbose:
+        print(f"  Generated in {t_gen:.2f}s")
+    
+    # Save to cache
+    try:
+        np.save(cache_file, table)
+        if verbose:
+            size_mb = os.path.getsize(cache_file) / (1024 * 1024)
+            print(f"  Saved to cache: {cache_file} ({size_mb:.1f} MB)")
+    except Exception as e:
+        if verbose:
+            print(f"  Failed to save cache: {e}")
+    
+    return table
+
+
+def get_cached_inverse_perm_table(
+    n: int,
+    n_perm: int,
+    seed: int = 0,
+    cache_dir: str = None,
+    force_regenerate: bool = False,
+    verbose: bool = True
+) -> np.ndarray:
+    """
+    Get inverse permutation table, loading from cache if available.
+    
+    Inverse permutation tables are used for T-column permutation:
+        T[:, inv_perm] @ Y == T @ Y[perm, :]
+    
+    Parameters
+    ----------
+    n : int
+        Number of elements to permute.
+    n_perm : int
+        Number of permutations.
+    seed : int, default=0
+        Random seed.
+    cache_dir : str, optional
+        Cache directory. Default: /data/parks34/.cache/ridgesig_perm_tables
+    force_regenerate : bool, default=False
+        If True, regenerate even if cache exists.
+    verbose : bool, default=True
+        Print progress messages.
+        
+    Returns
+    -------
+    np.ndarray, shape (n_perm, n), dtype intp
+        Inverse permutation table.
+    """
+    import time
+    
+    cache_dir = _ensure_cache_dir(cache_dir)
+    cache_file = os.path.join(cache_dir, _get_cache_filename(n, n_perm, seed, inverse=True))
+    
+    # Try to load from cache
+    if not force_regenerate and os.path.exists(cache_file):
+        try:
+            if verbose:
+                print(f"  Loading cached inverse permutation table from {cache_file}")
+            table = np.load(cache_file)
+            if table.shape == (n_perm, n):
+                if verbose:
+                    print(f"  Loaded: shape={table.shape}")
+                return table
+            else:
+                if verbose:
+                    print(f"  Cache shape mismatch: {table.shape} != ({n_perm}, {n})")
+        except Exception as e:
+            if verbose:
+                print(f"  Failed to load cache: {e}")
+    
+    # Generate table
+    if verbose:
+        print(f"  Generating inverse permutation table (n={n}, n_perm={n_perm}, seed={seed})...")
+    
+    t_start = time.time()
+    table = generate_inverse_permutation_table(n, n_perm, seed)
+    t_gen = time.time() - t_start
+    
+    if verbose:
+        print(f"  Generated in {t_gen:.2f}s")
+    
+    # Save to cache
+    try:
+        np.save(cache_file, table)
+        if verbose:
+            size_mb = os.path.getsize(cache_file) / (1024 * 1024)
+            print(f"  Saved to cache: {cache_file} ({size_mb:.1f} MB)")
+    except Exception as e:
+        if verbose:
+            print(f"  Failed to save cache: {e}")
+    
+    return table
+
+
+def clear_perm_cache(cache_dir: str = None) -> int:
+    """
+    Clear all cached permutation tables.
+    
+    Parameters
+    ----------
+    cache_dir : str, optional
+        Cache directory to clear.
+        
+    Returns
+    -------
+    int
+        Number of files removed.
+    """
+    cache_dir = _ensure_cache_dir(cache_dir)
+    
+    count = 0
+    for f in os.listdir(cache_dir):
+        if (f.startswith("perm_") or f.startswith("inv_perm_")) and f.endswith(".npy"):
+            try:
+                os.remove(os.path.join(cache_dir, f))
+                count += 1
+            except Exception as e:
+                print(f"  Failed to remove {f}: {e}")
+    
+    print(f"Cleared {count} cached permutation tables from {cache_dir}")
+    return count
+
+
+def list_cached_tables(cache_dir: str = None) -> list:
+    """
+    List all cached permutation tables.
+    
+    Parameters
+    ----------
+    cache_dir : str, optional
+        Cache directory to list.
+        
+    Returns
+    -------
+    list
+        List of dicts with filename, path, size_mb.
+    """
+    cache_dir = _ensure_cache_dir(cache_dir)
+    
+    if not os.path.exists(cache_dir):
+        return []
+    
+    tables = []
+    for f in os.listdir(cache_dir):
+        if (f.startswith("perm_") or f.startswith("inv_perm_")) and f.endswith(".npy"):
+            filepath = os.path.join(cache_dir, f)
+            size_mb = os.path.getsize(filepath) / (1024 * 1024)
+            tables.append({
+                'filename': f,
+                'path': filepath,
+                'size_mb': size_mb
+            })
+    
+    return tables
 
 
 # =============================================================================

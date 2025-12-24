@@ -124,6 +124,7 @@ from .ridge import (
     compute_projection_matrix,
     ridge_with_precomputed_T,
     CUPY_AVAILABLE,
+    CUPY_INIT_ERROR,
     DEFAULT_LAMBDA,
     DEFAULT_NRAND,
     DEFAULT_SEED,
@@ -135,6 +136,12 @@ from .batch import (
     estimate_batch_size,
     estimate_memory,
     StreamingResultWriter,
+    # Sparse-preserving batch processing
+    PopulationStats,
+    ProjectionComponents,
+    precompute_population_stats,
+    precompute_projection_components,
+    ridge_batch_sparse_preserving,
 )
 
 # I/O utilities
@@ -147,12 +154,22 @@ from .io import (
     get_file_info,
     concatenate_results,
     save_st_results_to_h5ad,
+    add_activity_to_anndata,
     H5PY_AVAILABLE,
     ANNDATA_AVAILABLE,
 )
 
 # RNG (for reproducibility testing)
-from .rng import GSLRNG, generate_permutation_table
+from .rng import (
+    GSLRNG, 
+    generate_permutation_table, 
+    generate_inverse_permutation_table,
+    get_cached_perm_table,
+    get_cached_inverse_perm_table,
+    clear_perm_cache,
+    list_cached_tables,
+    DEFAULT_CACHE_DIR,
+)
 
 __all__ = [
     # Main API
@@ -186,6 +203,12 @@ __all__ = [
     "estimate_batch_size",
     "estimate_memory",
     "StreamingResultWriter",
+    # Sparse-preserving batch processing
+    "PopulationStats",
+    "ProjectionComponents",
+    "precompute_population_stats",
+    "precompute_projection_components",
+    "ridge_batch_sparse_preserving",
     
     # I/O
     "load_results",
@@ -196,13 +219,21 @@ __all__ = [
     "get_file_info",
     "concatenate_results",
     "save_st_results_to_h5ad",
+    "add_activity_to_anndata",
     
-    # RNG
+    # RNG and Caching
     "GSLRNG",
     "generate_permutation_table",
+    "generate_inverse_permutation_table",
+    "get_cached_perm_table",
+    "get_cached_inverse_perm_table",
+    "clear_perm_cache",
+    "list_cached_tables",
+    "DEFAULT_CACHE_DIR",
     
     # Availability flags
     "CUPY_AVAILABLE",
+    "CUPY_INIT_ERROR",
     "H5PY_AVAILABLE",
     "ANNDATA_AVAILABLE",
     

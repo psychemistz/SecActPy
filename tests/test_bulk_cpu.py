@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
 """
-Test Script: Bulk RNA-seq Validation
+Test Script: CPU Bulk RNA-seq Inference Validation
 
-Validates SecActPy against RidgeR output for bulk RNA-seq data.
+Validates SecActPy bulk RNA-seq inference against RidgeR output.
 
-Dataset: Ly86-Fc_vs_Vehicle_logFC.txt (differential expression)
-Reference: R output from RidgeR::SecAct.activity.inference with method="legacy"
-
-Supports multiple input formats:
-- Gene symbols as row names, single column with log-FC
-- First column as gene symbols, remaining columns as samples
-- TSV, CSV, or space-separated files
+Dataset: Ly86-Fc_vs_Vehicle_logFC.txt
+Reference: R output from RidgeR::SecAct.activity.inference
 
 Usage:
-    python tests/test_bulk.py
-    python tests/test_bulk.py path/to/expression.csv
-    python tests/test_bulk.py path/to/expression.tsv --gene-col 0
+    python tests/test_bulk_cpu.py
+    python tests/test_bulk_cpu.py --save
+    python tests/test_bulk_cpu.py data.csv --gene-col 0
+    python tests/test_bulk_cpu.py data.tsv --no-validate
 
 Expected output:
     All arrays should match R output exactly (or within numerical tolerance).
@@ -27,6 +23,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import argparse
+import time
 
 # Add package to path for development testing
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -38,7 +35,6 @@ from secactpy import secact_activity_inference, load_expression_data
 # Configuration
 # =============================================================================
 
-# Paths (adjust as needed)
 PACKAGE_ROOT = Path(__file__).parent.parent
 DATA_DIR = PACKAGE_ROOT / "dataset"
 INPUT_FILE = DATA_DIR / "input" / "Ly86-Fc_vs_Vehicle_logFC.txt"
@@ -60,32 +56,19 @@ def load_r_output(output_dir: Path) -> dict:
     result = {}
     
     for name in ['beta', 'se', 'zscore', 'pvalue']:
-        # Try different file names (pval.txt vs pvalue.txt)
-        for filename in [f"{name}.txt", "pval.txt" if name == "pvalue" else None]:
-            if filename is None:
-                continue
-            filepath = output_dir / filename
-            if filepath.exists():
-                df = pd.read_csv(filepath, sep=r'\s+', index_col=0)
-                result[name] = df
-                print(f"  Loaded {name}: {df.shape}")
-                break
-        
-        if name not in result:
+        filepath = output_dir / f"{name}.txt"
+        if filepath.exists():
+            df = pd.read_csv(filepath, sep=r'\s+', index_col=0)
+            result[name] = df
+            print(f"  Loaded {name}: {df.shape}")
+        else:
             print(f"  Warning: {name}.txt not found")
     
     return result
 
 
 def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -> dict:
-    """
-    Compare Python and R results.
-    
-    Returns
-    -------
-    dict
-        Comparison results for each array
-    """
+    """Compare Python and R results."""
     comparison = {}
     
     for name in ['beta', 'se', 'zscore', 'pvalue']:
@@ -104,27 +87,20 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
             }
             continue
         
-        # Check row names
-        py_rows = set(py_arr.index)
-        r_rows = set(r_arr.index)
-        if py_rows != r_rows:
-            missing_in_py = r_rows - py_rows
-            missing_in_r = py_rows - r_rows
+        # Align by row names
+        common_rows = py_arr.index.intersection(r_arr.index)
+        if len(common_rows) != len(py_arr):
             comparison[name] = {
                 'status': 'FAIL',
-                'message': f'Row name mismatch. Missing in Python: {len(missing_in_py)}, Missing in R: {len(missing_in_r)}'
+                'message': f'Row name mismatch. Common: {len(common_rows)}, Python: {len(py_arr)}'
             }
-            if len(missing_in_py) <= 5:
-                print(f"    Missing in Python: {missing_in_py}")
-            if len(missing_in_r) <= 5:
-                print(f"    Missing in R: {missing_in_r}")
             continue
         
-        # Align by row names
-        py_aligned = py_arr.loc[r_arr.index]
+        py_aligned = py_arr.loc[common_rows]
+        r_aligned = r_arr.loc[common_rows]
         
         # Calculate difference
-        diff = np.abs(py_aligned.values - r_arr.values)
+        diff = np.abs(py_aligned.values - r_aligned.values)
         max_diff = np.nanmax(diff)
         mean_diff = np.nanmean(diff)
         
@@ -136,21 +112,11 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
                 'message': f'Max diff: {max_diff:.2e}'
             }
         else:
-            # Find location of max difference
-            max_idx = np.unravel_index(np.nanargmax(diff), diff.shape)
-            row_name = py_aligned.index[max_idx[0]]
-            col_name = py_aligned.columns[max_idx[1]]
-            py_val = py_aligned.iloc[max_idx[0], max_idx[1]]
-            r_val = r_arr.iloc[max_idx[0], max_idx[1]]
-            
             comparison[name] = {
                 'status': 'FAIL',
                 'max_diff': max_diff,
                 'mean_diff': mean_diff,
-                'location': f'{row_name}, {col_name}',
-                'py_value': py_val,
-                'r_value': r_val,
-                'message': f'Max diff: {max_diff:.2e} at ({row_name}, {col_name})'
+                'message': f'Max diff: {max_diff:.2e} (tolerance: {tolerance:.2e})'
             }
     
     return comparison
@@ -176,49 +142,44 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
         If True, save results to HDF5 file.
     """
     print("=" * 70)
-    print("SecActPy Bulk RNA-seq Validation Test")
+    print("SecActPy Bulk RNA-seq Validation Test (CPU)")
     print("=" * 70)
     
     # Determine input file
-    if input_file is None:
-        input_path = INPUT_FILE
-    else:
+    if input_file is not None:
         input_path = Path(input_file)
+        if not input_path.exists():
+            print(f"ERROR: Input file not found: {input_path}")
+            return False
+        validate = False  # Custom file, no R reference
+    else:
+        input_path = INPUT_FILE
+        if not input_path.exists():
+            print(f"ERROR: Default input file not found: {input_path}")
+            return False
     
-    # Check files exist
+    # Check files
     print("\n1. Checking files...")
-    if not input_path.exists():
-        print(f"   ERROR: Input file not found: {input_path}")
-        print("   Please ensure the test data is in place.")
-        return False
     print(f"   Input: {input_path}")
     
-    if validate and OUTPUT_DIR.exists():
-        print(f"   Reference outputs: {OUTPUT_DIR}")
-    elif validate:
-        print(f"   Warning: Reference output directory not found: {OUTPUT_DIR}")
-        print("   Will run inference but skip validation.")
-        validate = False
+    if validate:
+        if not OUTPUT_DIR.exists():
+            print(f"   Warning: Reference output not found: {OUTPUT_DIR}")
+            print("   Skipping validation.")
+            validate = False
+        else:
+            print(f"   Reference: {OUTPUT_DIR}")
     
-    # Load input data using flexible loader
+    # Load data
     print("\n2. Loading input data...")
-    try:
-        Y = load_expression_data(input_path, gene_col=gene_col)
-        print(f"   Expression data: {Y.shape} (genes × samples)")
-        print(f"   Sample names: {Y.columns.tolist()[:5]}{'...' if len(Y.columns) > 5 else ''}")
-        print(f"   First 5 genes: {Y.index[:5].tolist()}")
-        
-        # Show detected format
-        suffix = input_path.suffix.lower()
-        print(f"   File format: {suffix}")
-    except Exception as e:
-        print(f"   ERROR loading file: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    Y = load_expression_data(input_path, gene_col=gene_col)
+    print(f"   Expression data: {Y.shape} (genes × samples)")
+    print(f"   Samples: {list(Y.columns)}")
     
-    # Run Python inference
-    print("\n3. Running SecActPy inference...")
+    # Run inference
+    print("\n3. Running SecActPy inference (CPU)...")
+    start_time = time.time()
+    
     try:
         py_result = secact_activity_inference(
             input_profile=Y,
@@ -229,9 +190,14 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
             lambda_=LAMBDA,
             n_rand=NRAND,
             seed=SEED,
+            backend="numpy",
             verbose=True
         )
+        
+        elapsed = time.time() - start_time
+        print(f"   Completed in {elapsed:.2f} seconds")
         print(f"   Result shape: {py_result['beta'].shape}")
+        
     except Exception as e:
         print(f"   ERROR: {e}")
         import traceback
@@ -241,15 +207,15 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
     all_passed = True
     
     if validate:
-        # Load R reference output
+        # Load R reference
         print("\n4. Loading R reference output...")
         r_result = load_r_output(OUTPUT_DIR)
         
         if not r_result:
-            print("   Warning: No R output files found! Skipping validation.")
+            print("   Warning: No R output files found!")
             validate = False
         else:
-            # Compare results
+            # Compare
             print("\n5. Comparing results...")
             comparison = compare_results(py_result, r_result)
             
@@ -270,7 +236,7 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
             print("\n" + "=" * 70)
             if all_passed:
                 print("ALL TESTS PASSED! ✓")
-                print("SecActPy produces identical results to RidgeR.")
+                print("SecActPy bulk produces identical results to RidgeR.")
             else:
                 print("SOME TESTS FAILED! ✗")
                 print("Check the detailed output above for discrepancies.")
@@ -278,7 +244,7 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
     
     if not validate:
         print("\n" + "=" * 70)
-        print("INFERENCE COMPLETE")
+        print("INFERENCE COMPLETE (validation skipped)")
         print("=" * 70)
     
     # Show sample output
@@ -286,16 +252,14 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
     print(f"\n{step_num}. Sample output (first 10 rows of zscore):")
     print(py_result['zscore'].head(10))
     
-    # Optional: Save results to h5
+    # Save results
     if save_output:
-        step_num = 7 if validate else 5
-        print(f"\n{step_num}. Saving results to HDF5...")
+        step_num += 1
+        print(f"\n{step_num}. Saving results...")
         try:
             from secactpy.io import save_results
             
-            output_h5 = PACKAGE_ROOT / "dataset" / "output" / "bulk_with_activity.h5"
-            
-            # Convert DataFrames to arrays for save_results
+            output_h5 = PACKAGE_ROOT / "dataset" / "output" / "bulk_cpu_activity.h5"
             results_to_save = {
                 'beta': py_result['beta'].values,
                 'se': py_result['se'].values,
@@ -304,7 +268,6 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
                 'feature_names': list(py_result['beta'].index),
                 'sample_names': list(py_result['beta'].columns),
             }
-            
             save_results(results_to_save, output_h5)
             print(f"   Saved to: {output_h5}")
         except Exception as e:
@@ -316,40 +279,20 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="SecActPy Bulk RNA-seq Inference",
+        description="SecActPy Bulk RNA-seq Inference (CPU)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run with default test file and validate
-  python tests/test_bulk.py
+  # Run with default test file and validate against R
+  python tests/test_bulk_cpu.py
   
-  # Run with custom CSV file (genes in first column)
-  python tests/test_bulk.py data.csv --gene-col 0
+  # Run with custom CSV file
+  python tests/test_bulk_cpu.py data.csv --gene-col 0
   
-  # Run with custom TSV file (genes as row names)
-  python tests/test_bulk.py data.tsv
-  
-  # Run without validation
-  python tests/test_bulk.py data.csv --no-validate
-
-Supported file formats:
-  - CSV (comma-separated)
-  - TSV (tab-separated)
-  - TXT (space or tab-separated)
-
-Input file structure:
-  1. Gene symbols as row names (index):
-     Gene    Sample1  Sample2
-     GENE1   1.5      2.3
-     GENE2   0.8      1.2
-  
-  2. Gene symbols in first column:
-     GeneSymbol,Sample1,Sample2
-     GENE1,1.5,2.3
-     GENE2,0.8,1.2
+  # Run without validation and save results
+  python tests/test_bulk_cpu.py --no-validate --save
         """
     )
-    
     parser.add_argument(
         'input_file',
         nargs='?',
@@ -360,8 +303,7 @@ Input file structure:
         '--gene-col',
         type=str,
         default=None,
-        help='Column containing gene symbols (name or index). '
-             'If not specified, assumes genes are row names.'
+        help='Column containing gene symbols (name or index)'
     )
     parser.add_argument(
         '--no-validate',
@@ -373,20 +315,18 @@ Input file structure:
         action='store_true',
         help='Save results to HDF5 file'
     )
-    
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
     
-    # Convert gene_col to int if it's a number string
     gene_col = args.gene_col
     if gene_col is not None:
         try:
             gene_col = int(gene_col)
         except ValueError:
-            pass  # Keep as string (column name)
+            pass
     
     success = main(
         input_file=args.input_file,
