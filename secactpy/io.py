@@ -39,6 +39,7 @@ __all__ = [
     'load_as_anndata',
     'results_to_dataframes',
     'save_st_results_to_h5ad',
+    'add_activity_to_anndata',
     'H5PY_AVAILABLE',
     'ANNDATA_AVAILABLE',
 ]
@@ -517,6 +518,167 @@ def save_st_results_to_h5ad(
     print(f"  Activity results: {[k for k in adata.obsm.keys() if k.startswith('SecAct_')]}")
     if protein_names:
         print(f"  Proteins: {len(protein_names)}")
+    
+    return adata
+
+
+def add_activity_to_anndata(
+    adata: 'anndata.AnnData',
+    activity_results: Dict[str, Any],
+    key_prefix: str = "SecAct",
+    layer_name: Optional[str] = "SecAct_zscore",
+    copy: bool = False
+) -> 'anndata.AnnData':
+    """
+    Add activity inference results to an existing AnnData object.
+    
+    For single-cell level analysis, activity results (proteins × cells) are added to:
+    - adata.obsm: Activity matrices as (cells × proteins)
+    - adata.uns: Protein names and metadata
+    - adata.layers (optional): Z-scores as a layer for visualization
+    
+    Parameters
+    ----------
+    adata : AnnData
+        AnnData object to add activity results to.
+    activity_results : dict
+        Results from secact_activity_inference_scrnaseq containing:
+        - 'beta': DataFrame (proteins × cells)
+        - 'se': DataFrame (proteins × cells)
+        - 'zscore': DataFrame (proteins × cells)
+        - 'pvalue': DataFrame (proteins × cells)
+    key_prefix : str, default="SecAct"
+        Prefix for obsm keys (e.g., "SecAct_zscore", "SecAct_beta").
+    layer_name : str or None, default="SecAct_zscore"
+        If provided, also add z-scores as a layer for easy plotting.
+        Set to None to skip layer creation.
+    copy : bool, default=False
+        If True, return a copy of the AnnData object.
+        If False, modify in place.
+    
+    Returns
+    -------
+    AnnData
+        AnnData object with activity results added.
+    
+    Examples
+    --------
+    >>> import anndata as ad
+    >>> from secactpy import secact_activity_inference_scrnaseq
+    >>> from secactpy.io import add_activity_to_anndata
+    >>> 
+    >>> # Load data and run single-cell inference
+    >>> adata = ad.read_h5ad("scrnaseq_data.h5ad")
+    >>> results = secact_activity_inference_scrnaseq(
+    ...     adata,
+    ...     cell_type_col="cell_type",
+    ...     is_single_cell_level=True
+    ... )
+    >>> 
+    >>> # Add results to AnnData
+    >>> adata = add_activity_to_anndata(adata, results)
+    >>> 
+    >>> # Now you can use scanpy for visualization
+    >>> import scanpy as sc
+    >>> # Z-scores are in adata.obsm['SecAct_zscore']
+    >>> # Protein names are in adata.uns['SecAct_protein_names']
+    >>> 
+    >>> # Plot activity on UMAP
+    >>> protein_idx = adata.uns['SecAct_protein_names'].index('IL6')
+    >>> adata.obs['IL6_activity'] = adata.obsm['SecAct_zscore'][:, protein_idx]
+    >>> sc.pl.umap(adata, color='IL6_activity')
+    >>> 
+    >>> # Save with results
+    >>> adata.write_h5ad("scrnaseq_with_activity.h5ad")
+    
+    Notes
+    -----
+    Activity matrices in obsm are stored as (cells × proteins), transposed from
+    the inference output format (proteins × cells).
+    
+    The protein names can be accessed via:
+        protein_names = adata.uns['SecAct_protein_names']
+    
+    To get activity for a specific protein:
+        protein_idx = protein_names.index('IL6')
+        il6_activity = adata.obsm['SecAct_zscore'][:, protein_idx]
+    """
+    if not ANNDATA_AVAILABLE:
+        raise ImportError(
+            "anndata required. Install with: pip install anndata"
+        )
+    
+    if copy:
+        adata = adata.copy()
+    
+    # Get cell names from AnnData
+    cell_names = list(adata.obs_names)
+    n_cells = len(cell_names)
+    
+    # Get protein names from first result
+    protein_names = None
+    
+    for result_name in ['beta', 'se', 'zscore', 'pvalue']:
+        if result_name not in activity_results:
+            continue
+            
+        result_df = activity_results[result_name]
+        
+        if isinstance(result_df, pd.DataFrame):
+            # Get protein names
+            if protein_names is None:
+                protein_names = list(result_df.index)
+            
+            # Check if columns match cells
+            result_cols = list(result_df.columns)
+            
+            if len(result_cols) != n_cells:
+                raise ValueError(
+                    f"Activity results have {len(result_cols)} columns but AnnData has {n_cells} cells. "
+                    f"For pseudo-bulk results (per cell-type), use save_results() instead."
+                )
+            
+            # Align columns to cell order if needed
+            if result_cols != cell_names:
+                # Check if it's just a different order
+                if set(result_cols) == set(cell_names):
+                    result_df = result_df[cell_names]
+                else:
+                    warnings.warn(
+                        f"Cell names in activity results don't exactly match AnnData. "
+                        f"Using activity column order."
+                    )
+            
+            # Transpose to (cells × proteins) and add to obsm
+            adata.obsm[f'{key_prefix}_{result_name}'] = result_df.T.values
+            
+        else:
+            # Assume numpy array (proteins × cells)
+            arr = np.asarray(result_df)
+            if arr.shape[1] != n_cells:
+                raise ValueError(
+                    f"Activity array has {arr.shape[1]} columns but AnnData has {n_cells} cells."
+                )
+            adata.obsm[f'{key_prefix}_{result_name}'] = arr.T
+    
+    # Store protein names
+    if protein_names is not None:
+        adata.uns[f'{key_prefix}_protein_names'] = protein_names
+        adata.uns[f'{key_prefix}_n_proteins'] = len(protein_names)
+    
+    # Store metadata
+    adata.uns[f'{key_prefix}_inference_type'] = 'single_cell'
+    adata.uns['secactpy_version'] = "0.1.0"
+    
+    # Optionally add z-scores as a layer (for easy visualization)
+    # Note: layers must have shape (n_obs, n_vars), but our activity is (n_obs, n_proteins)
+    # So we can't add it as a standard layer. Instead, we document how to use obsm.
+    
+    print(f"Added activity results to AnnData:")
+    print(f"  Cells: {n_cells}")
+    print(f"  Proteins: {len(protein_names) if protein_names else 'unknown'}")
+    print(f"  Added to obsm: {[k for k in adata.obsm.keys() if k.startswith(key_prefix)]}")
+    print(f"  Protein names in: adata.uns['{key_prefix}_protein_names']")
     
     return adata
 

@@ -19,6 +19,7 @@ import sys
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import argparse
 
 # Add package to path for development testing
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -170,7 +171,15 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
 # Main Test
 # =============================================================================
 
-def main():
+def main(save_output=False):
+    """
+    Run Visium spatial transcriptomics inference.
+    
+    Parameters
+    ----------
+    save_output : bool, default=False
+        If True, save results to h5ad file.
+    """
     print("=" * 70)
     print("SecActPy Spatial Transcriptomics (ST) Validation Test")
     print("=" * 70)
@@ -284,7 +293,7 @@ def main():
     print(py_result['zscore'].iloc[:5][cols])
     
     # Optional: Save results to h5ad
-    if all_passed:
+    if save_output:
         print("\n7. Saving results to h5ad...")
         try:
             from secactpy.io import save_st_results_to_h5ad
@@ -307,6 +316,20 @@ def main():
     return all_passed
 
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="SecActPy Spatial Transcriptomics (Visium) Validation"
+    )
+    parser.add_argument(
+        '--save',
+        action='store_true',
+        help='Save results to h5ad file'
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    success = main()
+    args = parse_args()
+    success = main(save_output=args.save)
     sys.exit(0 if success else 1)

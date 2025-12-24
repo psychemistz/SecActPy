@@ -221,4 +221,4 @@ dataset/output/signature/ST/._*.txt
 dataset/output/signature/ST/._*.csv
 
 dataset
-
+tests/._*.py
