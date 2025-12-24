@@ -31,7 +31,7 @@ import time
 # Add package to path for development testing
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from secactpy import secact_activity_inference_st, load_visium_10x
+from secactpy import secact_activity_inference_st, load_visium_10x, load_signature
 
 
 # =============================================================================
@@ -150,22 +150,24 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
     return comparison
 
 
-def load_cosmx_data(input_file, min_genes=50):
+def load_cosmx_data(input_file, min_genes=50, verbose=True):
     """Load CosMx data from h5ad file."""
     import anndata as ad
     from scipy import sparse
     
     adata = ad.read_h5ad(input_file)
     
-    # Get counts
-    if adata.raw is not None:
-        counts_matrix = adata.raw.X
-        gene_names = list(adata.raw.var_names)
-    else:
-        counts_matrix = adata.X
-        gene_names = list(adata.var_names)
-    
+    # Always use adata.X and adata.var_names (not .raw)
+    # The .raw layer may have different gene IDs
+    counts_matrix = adata.X
+    gene_names = list(adata.var_names)
     cell_names = list(adata.obs_names)
+    
+    if verbose:
+        print(f"   Using adata.X (shape: {counts_matrix.shape})")
+        print(f"   Total genes: {len(gene_names)}")
+        print(f"   Total cells: {len(cell_names)}")
+        print(f"   Sample gene names: {gene_names[:10]}")
     
     # Apply QC filter
     if sparse.issparse(counts_matrix):
@@ -180,6 +182,9 @@ def load_cosmx_data(input_file, min_genes=50):
     counts_matrix = counts_matrix[keep_cells, :]
     cell_names = [c for c, k in zip(cell_names, keep_cells) if k]
     
+    if verbose:
+        print(f"   Cells after QC (>={min_genes} genes): {n_after} / {n_before}")
+    
     # Transpose to (genes × cells)
     if sparse.issparse(counts_matrix):
         counts_transposed = counts_matrix.T.tocsr()
@@ -188,8 +193,6 @@ def load_cosmx_data(input_file, min_genes=50):
         ).sparse.to_dense()
     else:
         counts_df = pd.DataFrame(counts_matrix.T, index=gene_names, columns=cell_names)
-    
-    print(f"   QC filter: {n_before} -> {n_after} cells (min_genes={min_genes})")
     
     return counts_df
 
@@ -248,12 +251,41 @@ def main(cosmx=False, save_output=False):
     print("\n2. Loading data...")
     
     if cosmx:
-        input_data = load_cosmx_data(COSMX_INPUT, min_genes=min_genes)
+        input_data = load_cosmx_data(COSMX_INPUT, min_genes=min_genes, verbose=True)
         print(f"   Shape: {input_data.shape} (genes × cells)")
     else:
         input_data = load_visium_10x(VISIUM_INPUT, min_genes=min_genes, verbose=True)
         print(f"   Spots: {len(input_data['spot_names'])}")
         print(f"   Genes: {len(input_data['gene_names'])}")
+    
+    # Check gene overlap with signature
+    print("\n   Checking gene overlap with signature...")
+    sig_df = load_signature("secact")
+    sig_genes = set(sig_df.index)
+    
+    if isinstance(input_data, pd.DataFrame):
+        data_genes = set(input_data.index)
+    else:
+        data_genes = set(input_data.get('gene_names', []))
+    
+    overlap = sig_genes & data_genes
+    print(f"   Signature genes: {len(sig_genes)}")
+    print(f"   Data genes: {len(data_genes)}")
+    print(f"   Overlap: {len(overlap)}")
+    
+    if len(overlap) == 0:
+        print("\n   WARNING: No direct gene overlap!")
+        print(f"   Sample signature genes: {list(sig_genes)[:5]}")
+        print(f"   Sample data genes: {list(data_genes)[:5]}")
+        
+        # Try case-insensitive matching
+        sig_genes_upper = {g.upper(): g for g in sig_genes}
+        data_genes_upper = {g.upper(): g for g in data_genes}
+        case_overlap = set(sig_genes_upper.keys()) & set(data_genes_upper.keys())
+        
+        if len(case_overlap) > 0:
+            print(f"\n   Case-insensitive overlap: {len(case_overlap)}")
+            print("   The updated inference.py should handle this automatically.")
     
     # Run inference
     print(f"\n3. Running SecActPy inference (CPU, {platform})...")
