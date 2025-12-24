@@ -8,11 +8,13 @@
 SecActPy is a Python package for inferring secreted protein (e.g. cytokine/chemokine) activity from gene expression data using ridge regression with permutation-based significance testing.
 
 **Key Features:**
-- 🎯 **SecAct Compatible**: Produces identical results to the R SecAct package
+- 🎯 **SecAct Compatible**: Produces identical results to the R SecAct/RidgeR package
 - 🚀 **GPU Acceleration**: Optional CuPy backend for large-scale analysis
 - 📊 **Million-Sample Scale**: Batch processing with streaming output for massive datasets
 - 🔬 **Built-in Signatures**: Includes SecAct and CytoSig signature matrices
-- 🧬 **Scanpy Integration**: Direct conversion to AnnData format
+- 🧬 **Multi-Platform Support**: Bulk RNA-seq, scRNA-seq, and Spatial Transcriptomics (Visium, CosMx)
+- 💾 **Smart Caching**: Permutation tables cached to disk for faster repeated analyses
+- 🧮 **Sparse-Preserving**: Memory-efficient processing for sparse single-cell data
 
 ## Installation
 
@@ -31,6 +33,9 @@ pip install "secactpy[io] @ git+https://github.com/psychemistz/SecActPy.git"
 # With GPU support (requires CUDA)
 pip install "secactpy[gpu] @ git+https://github.com/psychemistz/SecActPy.git"
 
+# With scRNA-seq support (scanpy)
+pip install "secactpy[scrnaseq] @ git+https://github.com/psychemistz/SecActPy.git"
+
 # All optional dependencies
 pip install "secactpy[all] @ git+https://github.com/psychemistz/SecActPy.git"
 ```
@@ -45,21 +50,22 @@ pip install -e ".[dev]"
 
 ## Quick Start
 
-### Basic Usage
+### Basic Usage (Bulk RNA-seq)
 
 ```python
 import pandas as pd
-from secactpy import secact_activity, load_signature
+from secactpy import secact_activity_inference, load_signature
 
-# Load the built-in SecAct signature
-signature = load_signature()  # Default: 'secact'
-# Or use CytoSig: signature = load_signature('cytosig')
+# Load your differential expression data (genes × samples)
+diff_expr = pd.read_csv("diff_expression.csv", index_col=0)
 
-# Load your expression data (genes × samples)
-expression = pd.read_csv("expression.csv", index_col=0)
-
-# Run inference
-result = secact_activity(expression, signature)
+# Run inference with built-in SecAct signature
+result = secact_activity_inference(
+    diff_expr,
+    is_differential=True,
+    sig_matrix="secact",  # or "cytosig"
+    verbose=True
+)
 
 # Access results (all are DataFrames with proper labels)
 activity = result['zscore']    # Activity z-scores
@@ -71,64 +77,133 @@ significant = result['pvalue'] < 0.05
 print(f"Significant: {significant.sum().sum()} / {significant.size}")
 ```
 
-### Differential Expression Analysis
+### Spatial Transcriptomics (10X Visium)
 
 ```python
-from secactpy import secact_activity, load_signature, compute_differential
+from secactpy import secact_activity_inference_st
 
-# Load treatment and control expression data
-treatment = pd.read_csv("treatment.csv", index_col=0)
-control = pd.read_csv("control.csv", index_col=0)
+# From 10X Visium folder
+result = secact_activity_inference_st(
+    "path/to/visium_folder/",
+    min_genes=1000,
+    scale_factor=1e5,
+    sig_matrix="secact",
+    verbose=True
+)
 
-# Compute differential expression
-diff_expr = compute_differential(treatment, control)
-
-# Run inference on differential expression
-signature = load_signature()
-result = secact_activity(diff_expr, signature)
+# Access spot-level activity
+activity = result['zscore']  # (proteins × spots)
 ```
 
-### Large-Scale Analysis (>100k samples)
+### Spatial Transcriptomics (CosMx / Single-Cell Resolution)
 
 ```python
-from secactpy import ridge_batch, estimate_batch_size, load_results
+import anndata as ad
+from secactpy import secact_activity_inference_st
 
-# Estimate optimal batch size for available memory
+# Load CosMx h5ad file
+adata = ad.read_h5ad("cosmx_data.h5ad")
+
+# Run inference on single-cell resolution ST data
+result = secact_activity_inference_st(
+    adata,
+    scale_factor=1000,  # Lower for CosMx
+    sig_matrix="secact",
+    sig_filter=True,    # Filter signatures to available genes
+    verbose=True
+)
+
+activity = result['zscore']  # (proteins × cells)
+```
+
+### scRNA-seq Analysis
+
+```python
+import anndata as ad
+from secactpy import secact_activity_inference_scrnaseq
+
+# Load AnnData
+adata = ad.read_h5ad("scrnaseq_data.h5ad")
+
+# Pseudo-bulk analysis by cell type
+result = secact_activity_inference_scrnaseq(
+    adata,
+    cell_type_col="cell_type",
+    is_single_cell_level=False,  # Aggregate by cell type
+    verbose=True
+)
+
+# Single-cell level analysis
+result_sc = secact_activity_inference_scrnaseq(
+    adata,
+    cell_type_col="cell_type",
+    is_single_cell_level=True,   # Per-cell inference
+    verbose=True
+)
+```
+
+### Large-Scale Analysis with Batch Processing
+
+```python
+from secactpy import (
+    ridge_batch, 
+    estimate_batch_size,
+    precompute_population_stats,
+    precompute_projection_components,
+    ridge_batch_sparse_preserving
+)
+
+# Estimate optimal batch size
 batch_size = estimate_batch_size(
     n_genes=20000, 
     n_features=50, 
-    available_gb=8.0  # Available RAM in GB
+    available_gb=8.0
 )
 
-# Prepare data as numpy arrays
-X = signature.values  # (n_genes, n_features)
-Y = expression.values  # (n_genes, n_samples)
-
-# Stream results directly to disk
-ridge_batch(
+# Standard batch processing
+result = ridge_batch(
     X, Y,
     batch_size=batch_size,
-    output_path="results.h5ad",
-    feature_names=signature.columns.tolist(),
-    sample_names=expression.columns.tolist()
+    n_rand=1000,
+    backend='cupy',  # Use GPU
+    verbose=True
 )
 
-# Load results later
-results = load_results("results.h5ad")
+# Sparse-preserving batch processing (for sparse scRNA-seq/ST data)
+# Keeps Y sparse throughout - critical for million-cell datasets
+stats = precompute_population_stats(Y_sparse)
+proj = precompute_projection_components(X, lambda_=5e5)
+
+result = ridge_batch_sparse_preserving(
+    proj, Y_sparse, stats,
+    n_rand=1000,
+    use_cache=True,  # Cache permutation tables
+    verbose=True
+)
 ```
 
-### Integration with Scanpy
+### Permutation Table Caching
+
+SecActPy caches permutation tables to disk for faster repeated analyses:
 
 ```python
-from secactpy import load_results, results_to_anndata
+from secactpy import (
+    get_cached_inverse_perm_table,
+    list_cached_tables,
+    clear_perm_cache,
+    DEFAULT_CACHE_DIR
+)
 
-# Load results and convert to AnnData
-results = load_results("results.h5ad")
-adata = results_to_anndata(results)
+# Tables are automatically cached during inference
+# Check cached tables
+print(list_cached_tables())
+# {'files': ['inv_perm_n7919_nperm1000_seed0.npy'], 'total_size_mb': 60.5}
 
-# Use with scanpy
-import scanpy as sc
-sc.pl.heatmap(adata, var_names=adata.var_names[:20])
+# Clear cache if needed
+clear_perm_cache()
+
+# Default cache location
+print(DEFAULT_CACHE_DIR)  # ~/.cache/ridgesig_perm_tables
 ```
 
 ## API Reference
@@ -137,9 +212,11 @@ sc.pl.heatmap(adata, var_names=adata.var_names[:20])
 
 | Function | Description |
 |----------|-------------|
-| `secact_activity(expression, signature)` | Main inference function |
+| `secact_activity_inference()` | Bulk RNA-seq inference |
+| `secact_activity_inference_st()` | Spatial transcriptomics inference |
+| `secact_activity_inference_scrnaseq()` | scRNA-seq inference |
 | `load_signature(name='secact')` | Load built-in signature matrix |
-| `compute_differential(treatment, control)` | Compute differential expression |
+| `load_visium_10x()` | Load 10X Visium data |
 
 ### Signature Loading
 
@@ -182,49 +259,69 @@ ridge_batch(X, Y, batch_size=batch_size, output_path="results.h5ad")
 from secactpy import (
     load_results, save_results, 
     results_to_anndata, load_as_anndata,
-    get_file_info, concatenate_results
+    save_st_results_to_h5ad, add_activity_to_anndata
 )
 
+# Save results to HDF5
+save_results(result, "output.h5")
+
 # Load results
-results = load_results("output.h5ad")
+results = load_results("output.h5")
 
-# Lazy loading for large files
-results = load_results("output.h5ad", load_arrays=False)
-batch = results['beta'][:, :1000]  # Load only what you need
+# Save ST results to h5ad
+save_st_results_to_h5ad(result, "st_activity.h5ad", adata)
 
-# File information
-info = get_file_info("output.h5ad")
-print(f"Shape: {info['shape']}, Size: {info['file_size_mb']:.1f} MB")
-
-# Concatenate multiple result files
-concatenated = concatenate_results(["part1.h5", "part2.h5", "part3.h5"])
+# Add activity to existing AnnData
+adata = add_activity_to_anndata(adata, result)
 ```
 
 ### Low-Level Ridge Functions
 
 ```python
-from secactpy import ridge, compute_projection_matrix
+from secactpy import ridge, compute_projection_matrix, ridge_with_precomputed_T
 
 # Direct ridge regression
-result = ridge(X, Y, lambda_=5e5, n_rand=1000, seed=0)
+result = ridge(X, Y, lambda_=5e5, n_rand=1000, seed=0, backend='numpy')
 
 # Precompute projection matrix for repeated use
 T = compute_projection_matrix(X, lambda_=5e5)
+result = ridge_with_precomputed_T(T, Y, n_rand=1000, seed=0)
 ```
 
 ## Parameters
 
-### `secact_activity()`
+### `secact_activity_inference()`
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `expression` | - | Gene expression DataFrame (genes × samples) |
-| `signature` | - | Signature matrix DataFrame (genes × features) |
+| `input_profile` | - | Expression DataFrame or path to file |
+| `is_differential` | `False` | Whether input is already differential expression |
+| `sig_matrix` | `"secact"` | Signature: "secact", "cytosig", or DataFrame |
 | `lambda_` | `5e5` | Ridge regularization parameter |
-| `n_rand` | `1000` | Number of permutations (0 for t-test) |
+| `n_rand` | `1000` | Number of permutations |
 | `seed` | `0` | Random seed for reproducibility |
-| `scale` | `'zscore'` | Scaling method: 'zscore', 'center', 'none' |
 | `backend` | `'auto'` | Computation backend: 'auto', 'numpy', 'cupy' |
+
+### `secact_activity_inference_st()`
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `input_data` | - | Path to Visium folder, DataFrame, or AnnData |
+| `scale_factor` | `1e5` | Normalization scale factor |
+| `sig_matrix` | `"secact"` | Signature matrix |
+| `min_genes` | `0` | Minimum genes per spot |
+| `sig_filter` | `False` | Filter signatures to available genes |
+| `backend` | `'auto'` | Computation backend |
+
+### `secact_activity_inference_scrnaseq()`
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `input_data` | - | AnnData object or path to h5ad file |
+| `cell_type_col` | - | Column in obs for cell type annotation |
+| `is_single_cell_level` | `False` | Per-cell or pseudo-bulk analysis |
+| `sig_matrix` | `"secact"` | Signature matrix |
+| `backend` | `'auto'` | Computation backend |
 
 ### `ridge_batch()`
 
@@ -234,20 +331,21 @@ T = compute_projection_matrix(X, lambda_=5e5)
 | `Y` | - | Expression matrix (n_genes × n_samples) |
 | `batch_size` | `5000` | Samples per batch |
 | `output_path` | `None` | Stream to file instead of memory |
-| `progress_callback` | `None` | Function for progress tracking |
+| `backend` | `'numpy'` | 'numpy' or 'cupy' |
 
 ## Reproducibility
 
-SecActPy produces **identical results** to the R SecAct package when using the same parameters:
+SecActPy produces **identical results** to the R SecAct/RidgeR package when using the same parameters:
 
 ```python
 # For exact RidgeR compatibility, use these defaults:
-result = secact_activity(
-    expression, signature,
+result = secact_activity_inference(
+    expression,
+    is_differential=True,
+    sig_matrix="secact",
     lambda_=5e5,
     n_rand=1000,
-    seed=0,
-    scale='zscore'
+    seed=0
 )
 ```
 
@@ -255,20 +353,15 @@ result = secact_activity(
 
 SecActPy implements a GSL-compatible MT19937 (Mersenne Twister) random number generator to ensure cross-platform reproducibility with R/RidgeR.
 
-**Important Implementation Note:** GSL treats `seed=0` specially by using `4357` as the actual seed value. This is a documented behavior in GSL's source code. SecActPy replicates this behavior exactly:
+**Important Implementation Note:** GSL treats `seed=0` specially by using `4357` as the actual seed value. SecActPy replicates this behavior exactly:
 
 ```python
 # When you specify seed=0 (the default):
-result = secact_activity(expression, signature, seed=0)
+result = secact_activity_inference(expression, seed=0)
 
 # Internally, GSL (and SecActPy) actually uses seed=4357
 # This ensures identical permutation sequences between R and Python
 ```
-
-This means:
-- `seed=0` in SecActPy → produces the same results as `seed=0` in RidgeR (GSL)
-- Both internally use seed value `4357` for the MT19937 generator
-- Any other seed value (e.g., `seed=42`) is used directly without modification
 
 ### Validation
 
@@ -293,28 +386,39 @@ pip install cupy-cuda12x  # For CUDA 12.x
 ```
 
 ```python
-from secactpy import secact_activity, CUPY_AVAILABLE
+from secactpy import secact_activity_inference, CUPY_AVAILABLE
 
 print(f"GPU available: {CUPY_AVAILABLE}")
 
 # GPU will be used automatically when available
-result = secact_activity(expression, signature, backend='auto')
+result = secact_activity_inference(expression, backend='auto')
 
 # Force GPU usage
-result = secact_activity(expression, signature, backend='cupy')
+result = secact_activity_inference(expression, backend='cupy')
 ```
+
+### GPU Performance
+
+| Dataset | CPU (NumPy) | GPU (CuPy) | Speedup |
+|---------|-------------|------------|---------|
+| Bulk (1k samples) | 1.5s | 0.3s | 5x |
+| scRNA-seq (5k cells) | 6.4s | 1.2s | 5.3x |
+| ST (10k spots) | 13.9s | 2.5s | 5.6x |
+| CosMx (100k cells) | 120s | 18s | 6.7x |
 
 ## File Formats
 
 ### Input
 
-- **Expression data**: CSV, TSV, or any pandas-readable format
+- **Bulk RNA-seq**: CSV, TSV, or any pandas-readable format
   - Rows: genes (gene symbols)
   - Columns: samples
 
-- **Signature matrices**: Bundled as TSV.GZ
-  - Rows: genes
-  - Columns: proteins/cytokines
+- **Spatial Transcriptomics**: 
+  - 10X Visium folder (with `filtered_feature_bc_matrix/`)
+  - AnnData (.h5ad) for CosMx and other platforms
+
+- **scRNA-seq**: AnnData (.h5ad)
 
 ### Output
 
@@ -333,14 +437,14 @@ result = secact_activity(expression, signature, backend='cupy')
 
 - CuPy ≥ 10.0 (GPU acceleration)
 - h5py ≥ 3.0 (HDF5 I/O)
-- anndata ≥ 0.8 (scanpy integration)
+- anndata ≥ 0.8 (AnnData support)
+- scanpy ≥ 1.9 (scRNA-seq analysis)
 
 ## Citation
 
 If you use SecActPy in your research, please cite:
 
 Beibei Ru, Lanqi Gong, Emily Yang, Seongyong Park, George Zaki, Kenneth Aldape, Lalage Wakefield, Peng Jiang. Inference of secreted protein activities in intercellular communication. [[Link](https://github.com/data2intelligence/SecAct)]
-
 
 ## License
 
@@ -349,3 +453,14 @@ MIT License - see [LICENSE](LICENSE) for details.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Changelog
+
+### v0.1.0
+- Initial release
+- Bulk RNA-seq, scRNA-seq, and Spatial Transcriptomics support
+- GPU acceleration with CuPy
+- Batch processing for million-sample datasets
+- Sparse-preserving batch processing
+- Permutation table caching
+- GSL-compatible RNG for R/RidgeR reproducibility
