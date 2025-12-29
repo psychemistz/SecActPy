@@ -222,6 +222,7 @@ def main(single_cell=False, save_output=False):
             n_rand=NRAND,
             seed=SEED,
             backend="numpy",
+            use_cache=True,  # Cache permutation tables for faster repeated runs
             verbose=True
         )
         

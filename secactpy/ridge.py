@@ -47,6 +47,7 @@ from .rng import (
     GSLRNG, 
     generate_permutation_table, 
     generate_inverse_permutation_table,
+    generate_inverse_permutation_table_fast,
     get_cached_inverse_perm_table,
 )
 
@@ -98,6 +99,8 @@ def ridge(
     n_rand: int = DEFAULT_NRAND,
     seed: int = DEFAULT_SEED,
     backend: Literal["auto", "numpy", "cupy"] = "auto",
+    use_gsl_rng: bool = True,
+    use_cache: bool = False,
     verbose: bool = False
 ) -> Dict[str, Any]:
     """
@@ -125,6 +128,12 @@ def ridge(
         - "auto": Use CuPy if available, else NumPy
         - "numpy": Force CPU computation
         - "cupy": Force GPU computation (raises error if unavailable)
+    use_gsl_rng : bool, default=True
+        Use GSL-compatible RNG for exact R/RidgeR reproducibility.
+        Set to False for faster inference (~70x faster) when R matching is not needed.
+    use_cache : bool, default=False
+        Cache permutation tables to disk for reuse. Enable when running
+        multiple analyses with the same gene count.
     verbose : bool, default=False
         Print progress information.
     
@@ -210,12 +219,12 @@ def ridge(
     
     # --- Dispatch to Backend ---
     if backend == "cupy":
-        result = _ridge_cupy(X, Y, lambda_, n_rand, seed, verbose)
+        result = _ridge_cupy(X, Y, lambda_, n_rand, seed, use_gsl_rng, use_cache, verbose)
     else:
         if n_rand == 0:
             result = _ridge_ttest_numpy(X, Y, lambda_, verbose)
         else:
-            result = _ridge_permutation_numpy(X, Y, lambda_, n_rand, seed, verbose)
+            result = _ridge_permutation_numpy(X, Y, lambda_, n_rand, seed, use_gsl_rng, use_cache, verbose)
     
     # --- Add Metadata ---
     result['method'] = backend
@@ -237,6 +246,8 @@ def _ridge_permutation_numpy(
     lambda_: float,
     n_rand: int,
     seed: int,
+    use_gsl_rng: bool,
+    use_cache: bool,
     verbose: bool
 ) -> Dict[str, np.ndarray]:
     """
@@ -282,8 +293,18 @@ def _ridge_permutation_numpy(
     
     # Generate inverse permutation table for T-column permutation
     # T[:, inv_perm] @ Y == T @ Y[perm, :] (mathematically equivalent)
-    # Use cached table from /data/parks34/.cache/ridgesig_perm_tables
-    inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=verbose)
+    if use_gsl_rng:
+        if use_cache:
+            inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=verbose)
+        else:
+            # Generate directly without caching
+            rng = GSLRNG(seed)
+            inv_perm_table = rng.inverse_permutation_table(n_genes, n_rand)
+    else:
+        # Fast NumPy RNG (~70x faster, no caching needed)
+        if verbose:
+            print(f"  Generating permutation table (fast NumPy RNG)...")
+        inv_perm_table = generate_inverse_permutation_table_fast(n_genes, n_rand, seed)
     
     # Accumulators
     aver = np.zeros((n_features, n_samples), dtype=np.float64)
@@ -432,6 +453,8 @@ def _ridge_cupy(
     lambda_: float,
     n_rand: int,
     seed: int,
+    use_gsl_rng: bool,
+    use_cache: bool,
     verbose: bool
 ) -> Dict[str, np.ndarray]:
     """
@@ -502,10 +525,20 @@ def _ridge_cupy(
     if verbose:
         print(f"  running {n_rand} permutations on GPU (T-column method)...")
     
-    # Generate inverse permutation table on CPU (must match GSL exactly)
+    # Generate inverse permutation table on CPU
     # T[:, inv_perm] @ Y == T @ Y[perm, :] (mathematically equivalent)
-    # Use cached table from /data/parks34/.cache/ridgesig_perm_tables
-    inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=verbose)
+    if use_gsl_rng:
+        if use_cache:
+            inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=verbose)
+        else:
+            # Generate directly without caching
+            rng = GSLRNG(seed)
+            inv_perm_table = rng.inverse_permutation_table(n_genes, n_rand)
+    else:
+        # Fast NumPy RNG (~70x faster, no caching needed)
+        if verbose:
+            print(f"  Generating permutation table (fast NumPy RNG)...")
+        inv_perm_table = generate_inverse_permutation_table_fast(n_genes, n_rand, seed)
     
     # Accumulators on GPU
     aver = cp.zeros((n_features, n_samples), dtype=cp.float64)
@@ -617,7 +650,8 @@ def ridge_with_precomputed_T(
     T: np.ndarray,
     Y: np.ndarray,
     n_rand: int = DEFAULT_NRAND,
-    seed: int = DEFAULT_SEED
+    seed: int = DEFAULT_SEED,
+    use_gsl_rng: bool = True
 ) -> Dict[str, np.ndarray]:
     """
     Ridge regression using precomputed projection matrix.
@@ -637,6 +671,9 @@ def ridge_with_precomputed_T(
         Number of permutations.
     seed : int, default=0
         Random seed.
+    use_gsl_rng : bool, default=True
+        Use GSL-compatible RNG for exact R/RidgeR reproducibility.
+        Set to False for faster inference (~70x faster) when R matching is not needed.
     
     Returns
     -------
@@ -662,8 +699,12 @@ def ridge_with_precomputed_T(
         )
     
     # Permutation testing with T-column permutation
-    # Use cached table from /data/parks34/.cache/ridgesig_perm_tables
-    inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=False)
+    if use_gsl_rng:
+        # GSL-compatible RNG for exact R/RidgeR reproducibility (uses caching)
+        inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=False)
+    else:
+        # Fast NumPy RNG (~70x faster, no caching needed)
+        inv_perm_table = generate_inverse_permutation_table_fast(n_genes, n_rand, seed)
     
     aver = np.zeros((n_features, n_samples), dtype=np.float64)
     aver_sq = np.zeros((n_features, n_samples), dtype=np.float64)

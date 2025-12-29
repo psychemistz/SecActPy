@@ -157,6 +157,7 @@ def main(save_output=False):
         n_rand=NRAND,
         seed=SEED,
         backend="numpy",  # CPU
+        use_cache=True,
         verbose=False
     )
     
@@ -178,6 +179,7 @@ def main(save_output=False):
         n_rand=NRAND,
         seed=SEED,
         backend="cupy",  # GPU
+        use_cache=True,
         verbose=False
     )
     

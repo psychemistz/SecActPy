@@ -14,7 +14,53 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from secactpy.rng import GSLRNG, MT19937Pure
+from secactpy.rng import (
+    GSLRNG, 
+    MT19937Pure,
+    get_cached_inverse_perm_table,
+)
+
+
+def test_caching():
+    """Test permutation caching functions."""
+    print("\n" + "=" * 70)
+    print("PERMUTATION CACHING TESTS")
+    print("=" * 70)
+    
+    # Test caching functionality
+    print("\n[1] Caching integration:")
+    n_genes = 449  # Typical common gene count
+    
+    import time
+    t0 = time.time()
+    cached_table = get_cached_inverse_perm_table(
+        n=n_genes,
+        n_perm=1000,
+        seed=0,
+        verbose=True
+    )
+    elapsed = time.time() - t0
+    
+    print(f"    Cached table shape: {cached_table.shape}")
+    print(f"    Time (first call): {elapsed:.3f}s")
+    
+    # Verify valid permutations
+    is_valid = all(sorted(cached_table[i]) == list(range(n_genes)) for i in range(min(10, 1000)))
+    print(f"    Valid permutations: {'✓ PASS' if is_valid else '✗ FAIL'}")
+    
+    # Second call should be faster (cached)
+    t0 = time.time()
+    cached_table2 = get_cached_inverse_perm_table(n=n_genes, n_perm=1000, seed=0, verbose=False)
+    elapsed2 = time.time() - t0
+    print(f"    Time (cached): {elapsed2:.3f}s")
+    
+    # Verify same result
+    is_same = np.array_equal(cached_table, cached_table2)
+    print(f"    Cached consistency: {'✓ PASS' if is_same else '✗ FAIL'}")
+    
+    print("\n" + "=" * 70)
+    print("CACHING TESTS COMPLETE")
+    print("=" * 70)
 
 
 def main():
@@ -79,6 +125,11 @@ def main():
         rng.shuffle_inplace(arr)
         print(f"    Perm {perm_idx} first 10: {arr[:10].tolist()}")
         print(f"    Perm {perm_idx} last 10:  {arr[-10:].tolist()}")
+    
+    # ==========================================================================
+    # 6. Test caching functions
+    # ==========================================================================
+    test_caching()
     
     # ==========================================================================
     # Print R code for comparison

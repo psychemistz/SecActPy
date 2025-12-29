@@ -362,6 +362,7 @@ def prepare_data(
     
     # Subset to common genes (in signature order for reproducibility)
     common_genes_ordered = [g for g in sig_idx if g in common_genes]
+    
     Y_df = expr_aligned.loc[common_genes_ordered]
     X_df = sig_aligned.loc[common_genes_ordered]
     
@@ -394,6 +395,8 @@ def secact_activity(
     scale: Literal["zscore", "center", "none"] = "zscore",
     backend: Literal["auto", "numpy", "cupy"] = "auto",
     min_genes: int = 10,
+    use_gsl_rng: bool = True,
+    use_cache: bool = False,
     verbose: bool = False
 ) -> Dict[str, Any]:
     """
@@ -428,6 +431,13 @@ def secact_activity(
         Computation backend.
     min_genes : int, default=10
         Minimum number of overlapping genes required.
+    use_gsl_rng : bool, default=True
+        Use GSL-compatible RNG for exact R/RidgeR reproducibility.
+        Set to False for faster inference (~70x faster permutation generation)
+        when exact R matching is not needed.
+    use_cache : bool, default=False
+        Cache permutation tables to disk for reuse. Enable when running
+        multiple analyses with the same gene count for faster repeated runs.
     verbose : bool, default=False
         Print progress information.
     
@@ -516,7 +526,7 @@ def secact_activity(
     
     n_genes_used = len(gene_names)
     if verbose:
-        print(f"  Using {n_genes_used} common genes")
+        print(f"  Using {n_genes_used} common genes (of {signature.shape[0]} signature genes)")
     
     # --- Run Ridge Regression ---
     if verbose:
@@ -529,6 +539,8 @@ def secact_activity(
         n_rand=n_rand,
         seed=seed,
         backend=backend,
+        use_gsl_rng=use_gsl_rng,
+        use_cache=use_cache,
         verbose=verbose
     )
     
@@ -824,6 +836,8 @@ def secact_activity_inference(
     sig_filter: bool = False,
     gene_col: Optional[Union[str, int]] = None,
     backend: str = "numpy",
+    use_gsl_rng: bool = True,
+    use_cache: bool = False,
     verbose: bool = True
 ) -> Dict[str, pd.DataFrame]:
     """
@@ -877,6 +891,12 @@ def secact_activity_inference(
         Use gene_col=0 if genes are in the first column.
     backend : str, default="numpy"
         Computation backend ("numpy" or "cupy").
+    use_gsl_rng : bool, default=True
+        Use GSL-compatible RNG for exact R/RidgeR reproducibility.
+        Set to False for faster inference when R matching is not needed.
+    use_cache : bool, default=False
+        Cache permutation tables to disk for reuse. Enable when running
+        multiple analyses with the same gene count for faster repeated runs.
     verbose : bool, default=True
         Print progress information.
     
@@ -981,56 +1001,20 @@ def secact_activity_inference(
             print(f"  Grouped into {X.shape[1]} signature groups")
     
     # --- Step 5: Find overlapping genes ---
-    # Standardize gene names for matching (uppercase, no version numbers)
-    def standardize_gene(g):
-        g = str(g).upper().strip()
-        # Remove version numbers (e.g., "GENE.1" -> "GENE")
-        if '.' in g:
-            g = g.split('.')[0]
-        return g
-    
-    # Create mapping from standardized to original names
-    Y_gene_map = {standardize_gene(g): g for g in Y.index}
-    X_gene_map = {standardize_gene(g): g for g in X.index}
-    
-    # Find overlap on standardized names
-    Y_genes_std = set(Y_gene_map.keys())
-    X_genes_std = set(X_gene_map.keys())
-    common_genes_std = Y_genes_std.intersection(X_genes_std)
+    common_genes = Y.index.intersection(X.index)
     
     if verbose:
-        print(f"  Expression genes: {len(Y.index)}")
-        print(f"  Signature genes: {len(X.index)}")
-        print(f"  Common genes (standardized): {len(common_genes_std)}")
-        if len(common_genes_std) == 0:
-            print(f"  DEBUG: Sample expression genes: {list(Y.index[:5])}")
-            print(f"  DEBUG: Sample signature genes: {list(X.index[:5])}")
-            print(f"  DEBUG: Sample expr standardized: {list(Y_genes_std)[:5]}")
-            print(f"  DEBUG: Sample sig standardized: {list(X_genes_std)[:5]}")
+        print(f"  Common genes: {len(common_genes)}")
     
-    if len(common_genes_std) < 2:
+    if len(common_genes) < 2:
         raise ValueError(
-            f"Too few overlapping genes ({len(common_genes_std)}) between expression and signature matrices! "
-            f"Expression has {len(Y.index)} genes, signature has {len(X.index)} genes. "
-            f"Sample expression genes: {list(Y.index[:5])}. "
-            f"Sample signature genes: {list(X.index[:5])}. "
+            f"Too few overlapping genes ({len(common_genes)}) between expression and signature matrices! "
             "Check that gene identifiers match (e.g., both use gene symbols)."
         )
     
-    # Get original gene names from Y (expression) for the common genes
-    common_genes = [Y_gene_map[g] for g in common_genes_std if g in Y_gene_map]
-    
     # --- Step 6: Subset to common genes ---
-    # Use Y's gene names for Y, and map to X's gene names for X
+    X_aligned = X.loc[common_genes].astype(np.float64)
     Y_aligned = Y.loc[common_genes].astype(np.float64)
-    
-    # Map expression genes to signature genes (they may have slightly different casing)
-    X_genes_for_common = [X_gene_map[standardize_gene(g)] for g in common_genes]
-    X_aligned = X.loc[X_genes_for_common].astype(np.float64)
-    
-    # Ensure indices match for downstream operations
-    X_aligned.index = common_genes
-    Y_aligned.index = common_genes
     
     # --- Step 7: Scale (z-score normalize columns) ---
     # R's scale() function: (x - mean) / sd where sd uses n-1 denominator (ddof=1)
@@ -1052,6 +1036,8 @@ def secact_activity_inference(
         n_rand=n_rand,
         seed=seed,
         backend=backend,
+        use_gsl_rng=use_gsl_rng,
+        use_cache=use_cache,
         verbose=False
     )
     
@@ -1107,6 +1093,8 @@ def secact_activity_inference_scrnaseq(
     seed: int = 0,
     sig_filter: bool = False,
     backend: str = "auto",
+    use_gsl_rng: bool = True,
+    use_cache: bool = False,
     verbose: bool = False
 ) -> Dict[str, Any]:
     """
@@ -1141,6 +1129,9 @@ def secact_activity_inference_scrnaseq(
         If True, filter signatures by available genes.
     backend : str, default="auto"
         Computation backend: "auto", "numpy", "cupy".
+    use_gsl_rng : bool, default=True
+        Use GSL-compatible RNG for exact R/RidgeR reproducibility.
+        Set to False for faster inference when R matching is not needed.
     verbose : bool, default=False
         If True, print progress messages.
     
@@ -1315,6 +1306,8 @@ def secact_activity_inference_scrnaseq(
         seed=seed,
         sig_filter=sig_filter,
         backend=backend,
+        use_gsl_rng=use_gsl_rng,
+        use_cache=use_cache,
         verbose=verbose
     )
     
@@ -1493,6 +1486,8 @@ def load_visium_10x(
 def secact_activity_inference_st(
     input_data,
     input_control = None,
+    cell_type_col: Optional[str] = None,
+    is_spot_level: bool = True,
     scale_factor: float = 1e5,
     sig_matrix: str = "secact",
     is_group_sig: bool = True,
@@ -1503,6 +1498,8 @@ def secact_activity_inference_st(
     sig_filter: bool = False,
     min_genes: int = 0,
     backend: str = "auto",
+    use_gsl_rng: bool = True,
+    use_cache: bool = False,
     verbose: bool = False
 ) -> Dict[str, Any]:
     """
@@ -1521,6 +1518,12 @@ def secact_activity_inference_st(
     input_control : optional
         Control expression data (same format as input_data).
         If None, uses mean of input_data as control.
+    cell_type_col : str, optional
+        Column name in AnnData.obs or metadata containing cell type annotations.
+        If provided with is_spot_level=False, aggregates spots by cell type.
+    is_spot_level : bool, default=True
+        If True, compute activity for each spot individually.
+        If False (and cell_type_col is provided), aggregate to pseudo-bulk by cell type.
     scale_factor : float, default=1e5
         Normalization scale factor (counts per scale_factor).
     sig_matrix : str, default="secact"
@@ -1541,6 +1544,11 @@ def secact_activity_inference_st(
         Minimum genes per spot (only used if input_data is a path).
     backend : str, default="auto"
         Computation backend: "auto", "numpy", "cupy".
+    use_gsl_rng : bool, default=True
+        Use GSL-compatible RNG for exact R/RidgeR reproducibility.
+        Set to False for faster inference when R matching is not needed.
+    use_cache : bool, default=False
+        Cache permutation tables to disk for reuse.
     verbose : bool, default=False
         Print progress messages.
     
@@ -1548,17 +1556,25 @@ def secact_activity_inference_st(
     -------
     dict
         Dictionary with:
-        - 'beta': DataFrame of coefficients (proteins × spots)
+        - 'beta': DataFrame of coefficients (proteins × spots or proteins × cell_types)
         - 'se': DataFrame of standard errors
         - 'zscore': DataFrame of z-scores
         - 'pvalue': DataFrame of p-values
     
     Examples
     --------
-    >>> # From 10X Visium folder
+    >>> # From 10X Visium folder (spot-level)
     >>> result = secact_activity_inference_st(
     ...     "path/to/visium/",
     ...     min_genes=1000,
+    ...     verbose=True
+    ... )
+    >>> 
+    >>> # From AnnData with cell type annotations (cell-type resolution)
+    >>> result = secact_activity_inference_st(
+    ...     adata,
+    ...     cell_type_col="cell_type",
+    ...     is_spot_level=False,
     ...     verbose=True
     ... )
     >>> 
@@ -1570,6 +1586,10 @@ def secact_activity_inference_st(
     if verbose:
         print("SecActPy Spatial Transcriptomics Activity Inference")
         print("=" * 50)
+    
+    # Track cell type annotations if available
+    cell_types = None
+    adata_obs = None
     
     # --- Step 1: Load/extract count matrix ---
     if isinstance(input_data, str):
@@ -1599,6 +1619,7 @@ def secact_activity_inference_st(
                     counts = input_data.X.T
                 gene_names = list(input_data.var_names)
                 spot_names = list(input_data.obs_names)
+                adata_obs = input_data.obs
         except Exception:
             raise ValueError(
                 "input_data must be a path to Visium folder, dict from load_visium_10x(), "
@@ -1671,6 +1692,48 @@ def secact_activity_inference_st(
     # --- Step 6: Log2 transform ---
     expr = np.log2(expr + 1)
     
+    # --- Step 6b: Cell type aggregation (if requested) ---
+    sample_names = spot_names  # Default to spot names
+    
+    if cell_type_col is not None and not is_spot_level:
+        # Validate cell type column
+        if adata_obs is None:
+            raise ValueError(
+                f"cell_type_col='{cell_type_col}' requires AnnData input with obs metadata. "
+                f"For DataFrame or Visium folder input, use is_spot_level=True."
+            )
+        
+        if cell_type_col not in adata_obs.columns:
+            raise ValueError(
+                f"Cell type column '{cell_type_col}' not found in adata.obs. "
+                f"Available columns: {list(adata_obs.columns)}"
+            )
+        
+        cell_types = adata_obs[cell_type_col].values
+        
+        if verbose:
+            print(f"  Aggregating to pseudo-bulk by cell type ('{cell_type_col}')...")
+        
+        unique_cell_types = sorted(set(cell_types))
+        n_types = len(unique_cell_types)
+        
+        if verbose:
+            print(f"  Cell types: {n_types}")
+        
+        # Aggregate by cell type (mean of log-transformed values)
+        pseudo_bulk = np.zeros((n_genes, n_types), dtype=np.float64)
+        
+        for j, ct in enumerate(unique_cell_types):
+            mask = cell_types == ct
+            spot_idx = np.where(mask)[0]
+            pseudo_bulk[:, j] = expr[:, spot_idx].mean(axis=1)
+        
+        expr = pseudo_bulk
+        sample_names = unique_cell_types
+        
+        if verbose:
+            print(f"  Aggregated expression: {expr.shape[0]} genes × {expr.shape[1]} cell types")
+    
     # --- Step 7: Compute differential expression ---
     if input_control is None:
         # Use row mean as control
@@ -1718,7 +1781,7 @@ def secact_activity_inference_st(
         gene_names = common_genes
     
     # Create DataFrame
-    expr_df = pd.DataFrame(expr_diff, index=gene_names, columns=spot_names)
+    expr_df = pd.DataFrame(expr_diff, index=gene_names, columns=sample_names)
     
     if verbose:
         print(f"  Expression matrix: {expr_df.shape}")
@@ -1735,6 +1798,8 @@ def secact_activity_inference_st(
         seed=seed,
         sig_filter=sig_filter,
         backend=backend,
+        use_gsl_rng=use_gsl_rng,
+        use_cache=use_cache,
         verbose=verbose
     )
     

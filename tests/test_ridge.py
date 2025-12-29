@@ -70,8 +70,10 @@ def secact_inference_gsl_legacy(
     """
     # Load signature
     X = load_signature(sig_matrix)
+    n_sig_genes = X.shape[0]
+    
     if verbose:
-        print(f"  Loaded signature: {X.shape[0]} genes × {X.shape[1]} proteins")
+        print(f"  Loaded signature: {n_sig_genes} genes × {X.shape[1]} proteins")
     
     # Find overlapping genes
     common_genes = Y.index.intersection(X.index)
@@ -96,7 +98,7 @@ def secact_inference_gsl_legacy(
     if verbose:
         print(f"  Running ridge regression (n_rand={n_rand})...")
     
-    # Run ridge
+    # Run ridge (use_cache=True since we run multiple times on same dataset in tests)
     result = ridge(
         X=X_scaled.values,
         Y=Y_scaled.values,
@@ -104,6 +106,7 @@ def secact_inference_gsl_legacy(
         n_rand=n_rand,
         seed=seed,
         backend='numpy',
+        use_cache=True,
         verbose=False
     )
     

@@ -276,6 +276,7 @@ def main(cosmx=False, save_output=False):
         seed=SEED,
         sig_filter=sig_filter,
         backend="numpy",  # CPU
+        use_cache=True,
         verbose=False
     )
     
@@ -298,6 +299,7 @@ def main(cosmx=False, save_output=False):
         seed=SEED,
         sig_filter=sig_filter,
         backend="cupy",  # GPU
+        use_cache=True,
         verbose=False
     )
     

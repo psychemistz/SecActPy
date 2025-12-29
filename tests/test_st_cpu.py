@@ -303,6 +303,7 @@ def main(cosmx=False, save_output=False):
             seed=SEED,
             sig_filter=sig_filter,
             backend="numpy",
+            use_cache=True,  # Cache permutation tables for faster repeated runs
             verbose=True
         )
         

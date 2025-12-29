@@ -99,10 +99,43 @@ def resample_columns(Y: np.ndarray, n_target: int, add_noise: bool = True) -> np
 
 def load_real_bulk_data():
     """Load real bulk RNA-seq data."""
-    if os.path.exists(BULK_INPUT):
-        df = pd.read_csv(BULK_INPUT, sep='\t', index_col=0)
+    if not os.path.exists(BULK_INPUT):
+        return None
+    
+    # Try different loading strategies
+    try:
+        # First, peek at the file to understand format
+        with open(BULK_INPUT, 'r') as f:
+            header = f.readline().strip()
+            first_data = f.readline().strip()
+        
+        # Check if first column looks like gene names or numbers
+        first_col_header = header.split('\t')[0] if '\t' in header else header.split()[0]
+        first_col_data = first_data.split('\t')[0] if '\t' in first_data else first_data.split()[0]
+        
+        # Determine separator
+        sep = '\t' if '\t' in header else r'\s+'
+        
+        # Load the data
+        df = pd.read_csv(BULK_INPUT, sep=sep)
+        
+        # Check if first column contains gene-like names (strings, not pure numbers)
+        first_col = df.iloc[:, 0]
+        if first_col.dtype == object or not pd.api.types.is_numeric_dtype(first_col):
+            # First column is gene names
+            df = df.set_index(df.columns[0])
+        else:
+            # Check if index (row numbers) should be replaced with a named column
+            # This happens when file has no row names but has gene column
+            pass
+        
+        # Ensure index is string type
+        df.index = df.index.astype(str)
+        
         return df
-    return None
+    except Exception as e:
+        print(f"  Warning: Failed to load bulk data: {e}")
+        return None
 
 
 def load_cosmx_data(input_file, min_genes=50, verbose=True):
@@ -187,29 +220,68 @@ def test_bulk_comparison(n_samples: int = 1000, use_gpu: bool = False):
     # Load real signature matrix
     print("\nLoading real SecAct signature matrix...")
     sig_df = load_signature('secact')
-    X = sig_df.values.astype(np.float64)
     gene_names = sig_df.index.tolist()
     protein_names = sig_df.columns.tolist()
-    n_genes_sig, n_features = X.shape
+    n_genes_sig, n_features = sig_df.shape
     print(f"  Signature: {n_genes_sig} genes × {n_features} proteins")
+    
+    # Create gene-to-index mapping for derivation
+    sig_gene_to_idx = {g: i for i, g in enumerate(gene_names)}
     
     # Load real bulk data
     print("\nLoading real bulk expression data...")
     bulk_df = load_real_bulk_data()
     
-    if bulk_df is not None:
-        # Find common genes
-        common_genes = list(set(gene_names) & set(bulk_df.index))
+    use_real_data = False
+    
+    if bulk_df is not None and bulk_df.shape[1] > 0:
         print(f"  Original: {bulk_df.shape[0]} genes × {bulk_df.shape[1]} samples")
-        print(f"  Common genes with signature: {len(common_genes)}")
         
-        # Subset to common genes
-        X_common = sig_df.loc[common_genes].values.astype(np.float64)
-        Y_base = bulk_df.loc[common_genes].values.astype(np.float64)
+        # Ensure index is string type for gene matching
+        bulk_df.index = bulk_df.index.astype(str)
+        
+        # Check if index looks like gene names (not just numbers)
+        sample_idx = list(bulk_df.index[:5])
+        looks_like_genes = any(not s.isdigit() for s in sample_idx)
+        
+        if not looks_like_genes:
+            print(f"  Index appears numeric: {sample_idx}")
+            print(f"  Cannot match genes, using simulated data...")
+        else:
+            # Standardize gene names for matching (uppercase)
+            sig_gene_map = {g.upper(): g for g in gene_names}
+            bulk_gene_map = {str(g).upper(): g for g in bulk_df.index}
+            
+            # Find common genes (case-insensitive)
+            common_upper = set(sig_gene_map.keys()) & set(bulk_gene_map.keys())
+            print(f"  Common genes with signature: {len(common_upper)}")
+            
+            if len(common_upper) >= 100:
+                # Map back to original names
+                common_sig_genes = [sig_gene_map[g] for g in common_upper]
+                common_bulk_genes = [bulk_gene_map[g] for g in common_upper]
+                
+                # Subset to common genes
+                X_common = sig_df.loc[common_sig_genes].values.astype(np.float64)
+                
+                # Reindex bulk_df to match order
+                bulk_subset = bulk_df.loc[common_bulk_genes]
+                Y_base = bulk_subset.values.astype(np.float64)
+                common_genes = common_sig_genes
+                use_real_data = True
+                print(f"  Using real data with {len(common_genes)} genes")
+            else:
+                print(f"  Too few common genes ({len(common_upper)}), using simulated data...")
     else:
-        print("  Real data not found, using simulated data...")
+        if bulk_df is not None:
+            print(f"  Bulk file has {bulk_df.shape[1]} samples, using simulated data...")
+        else:
+            print("  Real data not found, using simulated data...")
+    
+    if not use_real_data:
+        # Use simulated data with real signature (full genes)
         np.random.seed(42)
-        X_common = X
+        X_common = sig_df.values.astype(np.float64)
         Y_base = np.random.randn(n_genes_sig, 1).astype(np.float64)
         common_genes = gene_names
     
@@ -241,6 +313,7 @@ def test_bulk_comparison(n_samples: int = 1000, use_gpu: bool = False):
         n_rand=N_RAND, 
         seed=SEED, 
         backend=backend,
+        use_cache=True,
         verbose=True
     )
     t_std = time.time() - t_start
@@ -260,6 +333,7 @@ def test_bulk_comparison(n_samples: int = 1000, use_gpu: bool = False):
         seed=SEED,
         batch_size=batch_size,
         backend=backend,
+        use_cache=True,
         verbose=True
     )
     t_batch = time.time() - t_start
@@ -267,9 +341,9 @@ def test_bulk_comparison(n_samples: int = 1000, use_gpu: bool = False):
     print(f"   Shape: {result_batch['beta'].shape}")
     
     # =========================================================================
-    # Method 3: Sparse-preserving batch processing (CPU only)
+    # Method 3: Sparse-preserving batch processing
     # =========================================================================
-    print("\n3. Sparse-preserving batch processing (CPU)...")
+    print(f"\n3. Sparse-preserving batch processing ({backend})...")
     
     # Precompute components
     stats = precompute_population_stats(Y_raw)
@@ -281,6 +355,7 @@ def test_bulk_comparison(n_samples: int = 1000, use_gpu: bool = False):
         n_rand=N_RAND,
         seed=SEED,
         use_cache=True,
+        backend=backend,
         verbose=True
     )
     t_sparse = time.time() - t_start
@@ -301,7 +376,7 @@ def test_bulk_comparison(n_samples: int = 1000, use_gpu: bool = False):
     print("SUMMARY:")
     print(f"  Standard ({backend}):   {t_std:.3f}s")
     print(f"  Batch ({backend}):      {t_batch:.3f}s ({t_std/t_batch:.1f}x)" if t_batch > 0 else f"  Batch ({backend}):      {t_batch:.3f}s")
-    print(f"  Sparse-preserving: {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving: {t_sparse:.3f}s")
+    print(f"  Sparse-preserving ({backend}): {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving ({backend}): {t_sparse:.3f}s")
     
     all_pass = cmp1['pass'] and cmp2['pass']
     print(f"\n  {'✓ ALL TESTS PASSED' if all_pass else '✗ SOME TESTS FAILED'}")
@@ -398,9 +473,9 @@ def test_scrnaseq_comparison(n_cells: int = 5000, use_gpu: bool = False):
     print(f"   Shape: {result_batch['beta'].shape}")
     
     # =========================================================================
-    # Method 3: Sparse-preserving batch (sparse Y) - CPU only
+    # Method 3: Sparse-preserving batch (sparse Y)
     # =========================================================================
-    print("\n3. Sparse-preserving batch (sparse Y, no densification, CPU)...")
+    print(f"\n3. Sparse-preserving batch (sparse Y, {backend})...")
     
     # Precompute from sparse
     stats = precompute_population_stats(Y_sparse)
@@ -412,6 +487,7 @@ def test_scrnaseq_comparison(n_cells: int = 5000, use_gpu: bool = False):
         n_rand=N_RAND,
         seed=SEED,
         use_cache=True,
+        backend=backend,
         verbose=True
     )
     t_sparse = time.time() - t_start
@@ -432,7 +508,7 @@ def test_scrnaseq_comparison(n_cells: int = 5000, use_gpu: bool = False):
     print("SUMMARY:")
     print(f"  Standard ({backend}):   {t_std:.3f}s")
     print(f"  Batch ({backend}):      {t_batch:.3f}s ({t_std/t_batch:.1f}x)" if t_batch > 0 else f"  Batch ({backend}):      {t_batch:.3f}s")
-    print(f"  Sparse-preserving: {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving: {t_sparse:.3f}s")
+    print(f"  Sparse-preserving ({backend}): {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving ({backend}): {t_sparse:.3f}s")
     
     all_pass = cmp1['pass'] and cmp2['pass']
     print(f"\n  {'✓ ALL TESTS PASSED' if all_pass else '✗ SOME TESTS FAILED'}")
@@ -528,9 +604,9 @@ def test_st_comparison(n_spots: int = 10000, use_gpu: bool = False):
     print(f"   Shape: {result_batch['beta'].shape}")
     
     # =========================================================================
-    # Method 3: Sparse-preserving batch (sparse Y) - CPU only
+    # Method 3: Sparse-preserving batch (sparse Y)
     # =========================================================================
-    print("\n3. Sparse-preserving batch (sparse Y, no densification, CPU)...")
+    print(f"\n3. Sparse-preserving batch (sparse Y, {backend})...")
     
     # Precompute from sparse
     stats = precompute_population_stats(Y_sparse)
@@ -542,6 +618,7 @@ def test_st_comparison(n_spots: int = 10000, use_gpu: bool = False):
         n_rand=N_RAND,
         seed=SEED,
         use_cache=True,
+        backend=backend,
         verbose=True
     )
     t_sparse = time.time() - t_start
@@ -562,7 +639,7 @@ def test_st_comparison(n_spots: int = 10000, use_gpu: bool = False):
     print("SUMMARY:")
     print(f"  Standard ({backend}):   {t_std:.3f}s")
     print(f"  Batch ({backend}):      {t_batch:.3f}s ({t_std/t_batch:.1f}x)" if t_batch > 0 else f"  Batch ({backend}):      {t_batch:.3f}s")
-    print(f"  Sparse-preserving: {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving: {t_sparse:.3f}s")
+    print(f"  Sparse-preserving ({backend}): {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving ({backend}): {t_sparse:.3f}s")
     
     all_pass = cmp1['pass'] and cmp2['pass']
     print(f"\n  {'✓ ALL TESTS PASSED' if all_pass else '✗ SOME TESTS FAILED'}")
@@ -697,9 +774,9 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
     print(f"   Shape: {result_batch['beta'].shape}")
     
     # =========================================================================
-    # Method 3: Sparse-preserving batch (sparse Y) - CPU only
+    # Method 3: Sparse-preserving batch (sparse Y)
     # =========================================================================
-    print("\n3. Sparse-preserving batch (sparse Y, no densification, CPU)...")
+    print(f"\n3. Sparse-preserving batch (sparse Y, {backend})...")
     
     # Precompute from sparse
     stats = precompute_population_stats(Y_sparse)
@@ -711,6 +788,7 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
         n_rand=N_RAND,
         seed=SEED,
         use_cache=True,
+        backend=backend,
         verbose=True
     )
     t_sparse = time.time() - t_start
@@ -731,7 +809,7 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
     print("SUMMARY:")
     print(f"  Standard ({backend}):   {t_std:.3f}s")
     print(f"  Batch ({backend}):      {t_batch:.3f}s ({t_std/t_batch:.1f}x)" if t_batch > 0 else f"  Batch ({backend}):      {t_batch:.3f}s")
-    print(f"  Sparse-preserving: {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving: {t_sparse:.3f}s")
+    print(f"  Sparse-preserving ({backend}): {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving ({backend}): {t_sparse:.3f}s")
     
     all_pass = cmp1['pass'] and cmp2['pass']
     print(f"\n  {'✓ ALL TESTS PASSED' if all_pass else '✗ SOME TESTS FAILED'}")
@@ -806,7 +884,7 @@ def test_large_scale_comparison(n_samples: int = 50000):
             result = ridge_batch_sparse_preserving(
                 proj, Y_sparse, stats,
                 n_rand=N_RAND, seed=SEED,
-                use_cache=True, verbose=False
+                use_cache=True, backend='numpy', verbose=False
             )
         else:
             # Multiple batches - process each batch independently
@@ -822,7 +900,7 @@ def test_large_scale_comparison(n_samples: int = 50000):
                 batch_result = ridge_batch_sparse_preserving(
                     proj, Y_batch, batch_stats,
                     n_rand=N_RAND, seed=SEED,
-                    use_cache=True, verbose=False
+                    use_cache=True, backend='numpy', verbose=False
                 )
                 all_results.append(batch_result)
             

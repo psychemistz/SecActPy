@@ -41,6 +41,7 @@ import gc
 import math
 
 from .rng import (
+    GSLRNG,
     generate_permutation_table,
     generate_inverse_permutation_table,
     get_cached_inverse_perm_table,
@@ -395,26 +396,36 @@ def _compute_T_cupy(X_gpu, lambda_: float):
 def _process_batch_numpy(
     T: np.ndarray,
     Y_batch: np.ndarray,
-    perm_table: np.ndarray,
+    inv_perm_table: np.ndarray,
     n_rand: int
 ) -> Dict[str, np.ndarray]:
-    """Process a single batch using NumPy."""
+    """
+    Process a single batch using NumPy with T-column permutation.
+    
+    Uses T-column permutation which is mathematically equivalent to Y-row
+    permutation but more efficient (Y stays in place):
+        T[:, inv_perm] @ Y == T @ Y[perm, :]
+    """
     n_features = T.shape[0]
     batch_size = Y_batch.shape[1]
+    
+    # Ensure T is contiguous for efficient column indexing
+    T = np.ascontiguousarray(T)
     
     # Compute beta
     beta = T @ Y_batch
     
-    # Permutation testing
+    # Permutation testing with T-column permutation
     aver = np.zeros((n_features, batch_size), dtype=np.float64)
     aver_sq = np.zeros((n_features, batch_size), dtype=np.float64)
     pvalue_counts = np.zeros((n_features, batch_size), dtype=np.float64)
     abs_beta = np.abs(beta)
     
     for i in range(n_rand):
-        perm_idx = perm_table[i]
-        Y_perm = Y_batch[perm_idx, :]
-        beta_perm = T @ Y_perm
+        inv_perm_idx = inv_perm_table[i]
+        # Permute columns of T (Y stays in place)
+        T_perm = T[:, inv_perm_idx]
+        beta_perm = T_perm @ Y_batch
         
         pvalue_counts += (np.abs(beta_perm) >= abs_beta).astype(np.float64)
         aver += beta_perm
@@ -433,36 +444,43 @@ def _process_batch_numpy(
 def _process_batch_cupy(
     T_gpu,
     Y_batch: np.ndarray,
-    perm_table: np.ndarray,
+    inv_perm_table: np.ndarray,
     n_rand: int
 ) -> Dict[str, np.ndarray]:
-    """Process a single batch using CuPy."""
+    """
+    Process a single batch using CuPy with T-column permutation.
+    
+    Uses T-column permutation which is mathematically equivalent to Y-row
+    permutation but more efficient for GPU (Y stays in place on device):
+        T[:, inv_perm] @ Y == T @ Y[perm, :]
+    """
     n_features = T_gpu.shape[0]
     batch_size = Y_batch.shape[1]
     
-    # Transfer batch to GPU
+    # Transfer batch to GPU (stays in place during permutations)
     Y_gpu = cp.asarray(Y_batch, dtype=cp.float64)
     
     # Compute beta
     beta_gpu = T_gpu @ Y_gpu
     
-    # Permutation testing on GPU
+    # Permutation testing on GPU with T-column permutation
     aver = cp.zeros((n_features, batch_size), dtype=cp.float64)
     aver_sq = cp.zeros((n_features, batch_size), dtype=cp.float64)
     pvalue_counts = cp.zeros((n_features, batch_size), dtype=cp.float64)
     abs_beta = cp.abs(beta_gpu)
     
     for i in range(n_rand):
-        perm_idx = perm_table[i]
-        perm_gpu = cp.asarray(perm_idx, dtype=cp.int32)
-        Y_perm = Y_gpu[perm_gpu, :]
-        beta_perm = T_gpu @ Y_perm
+        inv_perm_idx = inv_perm_table[i]
+        inv_perm_gpu = cp.asarray(inv_perm_idx, dtype=cp.intp)
+        # Permute columns of T (Y stays in place on GPU)
+        T_perm = T_gpu[:, inv_perm_gpu]
+        beta_perm = T_perm @ Y_gpu
         
         pvalue_counts += (cp.abs(beta_perm) >= abs_beta).astype(cp.float64)
         aver += beta_perm
         aver_sq += beta_perm ** 2
         
-        del perm_gpu, Y_perm, beta_perm
+        del inv_perm_gpu, T_perm, beta_perm
     
     # Finalize statistics
     mean = aver / n_rand
@@ -499,6 +517,7 @@ def ridge_batch(
     seed: int = DEFAULT_SEED,
     batch_size: int = 5000,
     backend: Literal["auto", "numpy", "cupy"] = "auto",
+    use_cache: bool = False,
     output_path: Optional[str] = None,
     feature_names: Optional[list] = None,
     sample_names: Optional[list] = None,
@@ -637,11 +656,15 @@ def ridge_batch(
     if verbose:
         print(f"  T matrix computed in {time.time() - t_start:.2f}s")
     
-    # --- Generate Permutation Table (once) ---
+    # --- Get Inverse Permutation Table for T-column permutation ---
     if verbose:
-        print("  Generating permutation table...")
+        print("  Loading inverse permutation table (T-column method)...")
     
-    perm_table = generate_permutation_table(n_genes, n_rand, seed)
+    if use_cache:
+        inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=verbose)
+    else:
+        rng = GSLRNG(seed)
+        inv_perm_table = rng.inverse_permutation_table(n_genes, n_rand)
     
     # --- Process Batches ---
     if verbose:
@@ -657,11 +680,11 @@ def ridge_batch(
         end_col = min(start_col + batch_size, n_samples)
         Y_batch = Y[:, start_col:end_col]
         
-        # Process batch
+        # Process batch with T-column permutation
         if use_gpu:
-            batch_result = _process_batch_cupy(T, Y_batch, perm_table, n_rand)
+            batch_result = _process_batch_cupy(T, Y_batch, inv_perm_table, n_rand)
         else:
-            batch_result = _process_batch_numpy(T, Y_batch, perm_table, n_rand)
+            batch_result = _process_batch_numpy(T, Y_batch, inv_perm_table, n_rand)
         
         # Store or write results
         if writer is not None:
@@ -685,7 +708,7 @@ def ridge_batch(
     total_time = time.time() - start_time
     
     # Cleanup
-    del T, perm_table
+    del T, inv_perm_table
     if use_gpu:
         cp.get_default_memory_pool().free_all_blocks()
     gc.collect()
@@ -919,7 +942,8 @@ def ridge_batch_sparse_preserving(
     stats: PopulationStats,
     n_rand: int = DEFAULT_NRAND,
     seed: int = DEFAULT_SEED,
-    use_cache: bool = True,
+    use_cache: bool = False,
+    backend: Literal["auto", "numpy", "cupy"] = "auto",
     verbose: bool = False
 ) -> Dict[str, np.ndarray]:
     """
@@ -944,6 +968,8 @@ def ridge_batch_sparse_preserving(
         Random seed for permutations.
     use_cache : bool, default=True
         Use cached permutation tables from /data/parks34/.cache/ridgesig_perm_tables.
+    backend : {"auto", "numpy", "cupy"}, default="auto"
+        Computation backend. "auto" uses GPU if available.
     verbose : bool, default=False
         Print progress.
         
@@ -975,8 +1001,17 @@ def ridge_batch_sparse_preserving(
     >>> # 2. Process batches (Y stays sparse)
     >>> for batch_start in range(0, n_samples, batch_size):
     ...     Y_batch = Y_full[:, batch_start:batch_start+batch_size]
-    ...     result = ridge_batch_sparse_preserving(proj, Y_batch, stats)
+    ...     result = ridge_batch_sparse_preserving(proj, Y_batch, stats, backend='cupy')
     """
+    # Determine backend
+    if backend == "auto":
+        backend = "cupy" if CUPY_AVAILABLE else "numpy"
+    elif backend == "cupy" and not CUPY_AVAILABLE:
+        warnings.warn("CuPy not available, falling back to NumPy")
+        backend = "numpy"
+    
+    use_gpu = (backend == "cupy")
+    
     T = proj.T
     c = proj.c
     n_features, n_genes = T.shape
@@ -996,11 +1031,19 @@ def ridge_batch_sparse_preserving(
         sigma = stats.sigma
         mu_over_sigma = stats.mu_over_sigma
     
+    # Convert Y if sparse
+    is_sparse = sps.issparse(Y)
+    
+    # --- GPU path ---
+    if use_gpu:
+        return _ridge_batch_sparse_preserving_gpu(
+            T, c, Y, sigma, mu_over_sigma, n_rand, seed, use_cache, is_sparse, verbose
+        )
+    
+    # --- CPU path ---
     # Compute correction term (constant across permutations!)
     correction = np.outer(c, mu_over_sigma)
     
-    # Convert Y if sparse
-    is_sparse = sps.issparse(Y)
     if is_sparse:
         Y_csr = Y.tocsr() if not isinstance(Y, sps.csr_matrix) else Y
     else:
@@ -1038,7 +1081,8 @@ def ridge_batch_sparse_preserving(
             n_genes, n_rand, seed, verbose=verbose
         )
     else:
-        inv_perm_table = generate_inverse_permutation_table(n_genes, n_rand, seed)
+        rng = GSLRNG(seed)
+        inv_perm_table = rng.inverse_permutation_table(n_genes, n_rand)
     
     # Accumulators
     aver = np.zeros((n_features, n_samples), dtype=np.float64)
@@ -1085,6 +1129,131 @@ def ridge_batch_sparse_preserving(
         'zscore': zscore,
         'pvalue': pvalue
     }
+
+
+def _ridge_batch_sparse_preserving_gpu(
+    T: np.ndarray,
+    c: np.ndarray,
+    Y: Union[np.ndarray, sps.spmatrix],
+    sigma: np.ndarray,
+    mu_over_sigma: np.ndarray,
+    n_rand: int,
+    seed: int,
+    use_cache: bool,
+    is_sparse: bool,
+    verbose: bool
+) -> Dict[str, np.ndarray]:
+    """GPU implementation of sparse-preserving ridge batch processing."""
+    if cp is None:
+        raise RuntimeError("CuPy not available")
+    
+    n_features, n_genes = T.shape
+    n_samples = Y.shape[1]
+    
+    if verbose:
+        print(f"  Transferring data to GPU...")
+    
+    # Transfer to GPU
+    T_gpu = cp.asarray(T, dtype=cp.float64)
+    c_gpu = cp.asarray(c, dtype=cp.float64)
+    sigma_gpu = cp.asarray(sigma, dtype=cp.float64)
+    mu_over_sigma_gpu = cp.asarray(mu_over_sigma, dtype=cp.float64)
+    
+    # Handle Y (dense on GPU even if sparse on CPU for better performance)
+    if is_sparse:
+        Y_gpu = cp.asarray(Y.toarray(), dtype=cp.float64)
+    else:
+        Y_gpu = cp.asarray(Y, dtype=cp.float64)
+    
+    # Compute correction term (constant across permutations!)
+    correction_gpu = cp.outer(c_gpu, mu_over_sigma_gpu)
+    
+    # --- Compute observed beta ---
+    if verbose:
+        print(f"  Computing beta on GPU (n_samples={n_samples})...")
+    
+    beta_raw_gpu = T_gpu @ Y_gpu
+    beta_gpu = beta_raw_gpu / sigma_gpu - correction_gpu
+    
+    # --- Permutation testing ---
+    if n_rand == 0:
+        beta = cp.asnumpy(beta_gpu)
+        return {
+            'beta': beta,
+            'se': np.zeros_like(beta),
+            'zscore': np.zeros_like(beta),
+            'pvalue': np.ones_like(beta)
+        }
+    
+    if verbose:
+        print(f"  Running {n_rand} permutations on GPU (T-column method)...")
+    
+    # Get inverse permutation table (on CPU)
+    if use_cache:
+        inv_perm_table = get_cached_inverse_perm_table(
+            n_genes, n_rand, seed, verbose=verbose
+        )
+    else:
+        rng = GSLRNG(seed)
+        inv_perm_table = rng.inverse_permutation_table(n_genes, n_rand)
+    
+    # Transfer entire permutation table to GPU
+    inv_perm_table_gpu = cp.asarray(inv_perm_table, dtype=cp.int32)
+    
+    # Accumulators on GPU
+    aver_gpu = cp.zeros((n_features, n_samples), dtype=cp.float64)
+    aver_sq_gpu = cp.zeros((n_features, n_samples), dtype=cp.float64)
+    pvalue_counts_gpu = cp.zeros((n_features, n_samples), dtype=cp.float64)
+    abs_beta_gpu = cp.abs(beta_gpu)
+    
+    # Permutation loop on GPU
+    for i in range(n_rand):
+        inv_perm_idx = inv_perm_table_gpu[i]
+        
+        # T-column permutation
+        T_perm_gpu = T_gpu[:, inv_perm_idx]
+        
+        # Compute permuted beta
+        beta_raw_perm_gpu = T_perm_gpu @ Y_gpu
+        
+        # Apply scaling (correction is constant!)
+        beta_perm_gpu = beta_raw_perm_gpu / sigma_gpu - correction_gpu
+        
+        # Accumulate statistics
+        pvalue_counts_gpu += (cp.abs(beta_perm_gpu) >= abs_beta_gpu).astype(cp.float64)
+        aver_gpu += beta_perm_gpu
+        aver_sq_gpu += beta_perm_gpu ** 2
+    
+    # --- Finalize statistics on GPU ---
+    if verbose:
+        print("  Finalizing statistics on GPU...")
+    
+    mean_gpu = aver_gpu / n_rand
+    var_gpu = (aver_sq_gpu / n_rand) - (mean_gpu ** 2)
+    se_gpu = cp.sqrt(cp.maximum(var_gpu, 0.0))
+    zscore_gpu = cp.where(se_gpu > EPS, (beta_gpu - mean_gpu) / se_gpu, 0.0)
+    pvalue_gpu = (pvalue_counts_gpu + 1.0) / (n_rand + 1.0)
+    
+    # Transfer results to CPU
+    if verbose:
+        print("  Transferring results to CPU...")
+    
+    result = {
+        'beta': cp.asnumpy(beta_gpu),
+        'se': cp.asnumpy(se_gpu),
+        'zscore': cp.asnumpy(zscore_gpu),
+        'pvalue': cp.asnumpy(pvalue_gpu)
+    }
+    
+    # Cleanup GPU memory
+    del T_gpu, c_gpu, Y_gpu, sigma_gpu, mu_over_sigma_gpu, correction_gpu
+    del beta_raw_gpu, beta_gpu, inv_perm_table_gpu
+    del aver_gpu, aver_sq_gpu, pvalue_counts_gpu, abs_beta_gpu
+    del mean_gpu, var_gpu, se_gpu, zscore_gpu, pvalue_gpu
+    cp.get_default_memory_pool().free_all_blocks()
+    gc.collect()
+    
+    return result
 
 
 # =============================================================================
