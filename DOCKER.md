@@ -1,22 +1,38 @@
 # Docker Usage Guide
 
-This guide explains how to use SecActPy with Docker, including both CPU and GPU versions.
+This guide explains how to use SecActPy with Docker, including CPU, GPU, and R-enabled versions.
 
 ## Quick Start
 
-### Build Images
+### Pull Pre-built Images
 
 ```bash
-# CPU version (default, Python only - fast build)
+# CPU version (Python only) - recommended for most users
+docker pull psychemistz/secactpy:latest
+
+# GPU version (Python + CuPy)
+docker pull psychemistz/secactpy:gpu
+
+# CPU + R version (Python + SecAct/RidgeR/SpaCET)
+docker pull psychemistz/secactpy:with-r
+
+# GPU + R version (full stack)
+docker pull psychemistz/secactpy:gpu-with-r
+```
+
+### Build Images Locally
+
+```bash
+# CPU version (default, Python only - fast build ~5 min)
 docker build -t secactpy:latest .
 
-# CPU version with R SecAct package (slower)
-docker build -t secactpy:with-r --build-arg INSTALL_R=true .
-
-# GPU version (Python only)
+# GPU version (Python + CuPy ~10 min)
 docker build -t secactpy:gpu --build-arg USE_GPU=true .
 
-# GPU version with R SecAct package
+# CPU + R version (Python + R packages ~20-30 min)
+docker build -t secactpy:with-r --build-arg INSTALL_R=true .
+
+# GPU + R version (full stack ~30-40 min)
 docker build -t secactpy:gpu-with-r --build-arg USE_GPU=true --build-arg INSTALL_R=true .
 ```
 
@@ -25,22 +41,59 @@ docker build -t secactpy:gpu-with-r --build-arg USE_GPU=true --build-arg INSTALL
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `USE_GPU` | `false` | Set to `true` for GPU/CUDA support |
-| `INSTALL_R` | `false` | Set to `true` to include R and SecAct package |
+| `INSTALL_R` | `false` | Set to `true` to include R and packages |
 
-### Run Containers
+## Available Docker Images
+
+| Tag | Python | GPU | R | Size | Use Case |
+|-----|--------|-----|---|------|----------|
+| `latest` / `cpu` | ✓ | ✗ | ✗ | ~2 GB | General use |
+| `gpu` | ✓ | ✓ | ✗ | ~6 GB | GPU acceleration |
+| `with-r` / `cpu-with-r` | ✓ | ✗ | ✓ | ~3.5 GB | R cross-validation |
+| `gpu-with-r` | ✓ | ✓ | ✓ | ~8 GB | Full stack |
+
+## R Packages Included
+
+When building with `INSTALL_R=true`, the following packages are installed:
+
+### From CRAN (`install.packages()`)
+- remotes, BiocManager, devtools
+- Matrix, ggplot2, dplyr, tidyr, data.table
+- Rcpp, RcppArmadillo, RcppEigen
+
+### From Bioconductor (`BiocManager::install()`)
+- Biobase, S4Vectors, IRanges
+- GenomicRanges, SummarizedExperiment
+- SingleCellExperiment
+
+### From GitHub (`remotes::install_github()`)
+- **SecAct**: `data2intelligence/SecAct`
+- **RidgeR**: `psychemistz/RidgeR`
+- **SpaCET**: `data2intelligence/SpaCET`
+
+## Running Containers
+
+### Interactive Mode
 
 ```bash
-# Interactive (CPU)
+# CPU
 docker run -it --rm -v $(pwd):/workspace secactpy:latest
 
-# Interactive (GPU)
+# GPU
 docker run -it --rm --gpus all -v $(pwd):/workspace secactpy:gpu
 
-# Run a Python script
+# CPU + R (for cross-validation)
+docker run -it --rm -v $(pwd):/workspace secactpy:with-r
+```
+
+### Run Scripts
+
+```bash
+# Python script
 docker run --rm -v $(pwd):/workspace secactpy:latest python your_script.py
 
-# Run an R script (if R installed)
-docker run --rm -v $(pwd):/workspace secactpy:latest Rscript your_script.R
+# R script
+docker run --rm -v $(pwd):/workspace secactpy:with-r Rscript your_script.R
 ```
 
 ## Using Docker Compose
@@ -48,79 +101,90 @@ docker run --rm -v $(pwd):/workspace secactpy:latest Rscript your_script.R
 Docker Compose simplifies container management:
 
 ```bash
-# Start CPU container in background
+# Start CPU container
 docker-compose up -d secactpy
 
-# Start GPU container in background
+# Start GPU container
 docker-compose up -d secactpy-gpu
 
-# Enter the container
+# Start CPU + R container
+docker-compose up -d secactpy-r
+
+# Enter a running container
 docker-compose exec secactpy bash
 
 # Stop all containers
 docker-compose down
 ```
 
+### Available Services
+
+| Service | GPU | R | Port | Description |
+|---------|-----|---|------|-------------|
+| `secactpy` | ✗ | ✗ | - | CPU interactive |
+| `secactpy-gpu` | ✓ | ✗ | - | GPU interactive |
+| `secactpy-r` | ✗ | ✓ | - | CPU + R interactive |
+| `secactpy-gpu-r` | ✓ | ✓ | - | GPU + R interactive |
+| `secactpy-jupyter` | ✗ | ✗ | 8888 | Jupyter Lab (CPU) |
+| `secactpy-jupyter-gpu` | ✓ | ✗ | 8889 | Jupyter Lab (GPU) |
+| `secactpy-jupyter-r` | ✗ | ✓ | 8890 | Jupyter Lab (CPU + R) |
+
 ### Jupyter Lab
 
 ```bash
-# Start Jupyter Lab (CPU)
+# Start Jupyter (CPU)
 docker-compose up secactpy-jupyter
 # Open http://localhost:8888
 
-# Start Jupyter Lab (GPU)
+# Start Jupyter (GPU)
 docker-compose up secactpy-jupyter-gpu
 # Open http://localhost:8889
+
+# Start Jupyter (CPU + R)
+docker-compose up secactpy-jupyter-r
+# Open http://localhost:8890
 ```
 
-## What's Included
+## Validation Examples
 
-### Python Packages (always installed)
-- **SecActPy**: Python implementation
-- **NumPy, Pandas, SciPy**: Core scientific computing
-- **AnnData, Scanpy**: Single-cell analysis
-- **h5py**: HDF5 file support
-- **Jupyter**: Interactive notebooks
-- **CuPy** (GPU version only): GPU acceleration
-
-### R Packages (when INSTALL_R=true)
-- **SecAct**: Original R implementation
-- **Biobase**: Bioconductor dependency
-
-## Validation Example
-
-Run validation tests inside the container:
+### Verify Python Installation
 
 ```bash
-# Enter container
-docker run -it --rm -v $(pwd):/workspace secactpy:latest
-
-# Inside container - Python
-python -c "
+docker run --rm secactpy:latest python -c "
 import secactpy
-import pandas as pd
-
-# Quick test
-print(f'SecActPy imported: {secactpy.__name__}')
+print(f'SecActPy {secactpy.__version__}')
 print(f'GPU available: {secactpy.CUPY_AVAILABLE}')
-"
 
-# Inside container - R
-Rscript -e "
-library(SecAct)
-cat('SecAct version:', as.character(packageVersion('SecAct')), '\n')
+# Load signature
+sig = secactpy.load_signature('secact')
+print(f'Signature: {sig.shape}')
 "
 ```
 
-## Cross-Validation (R vs Python)
-
-Compare R and Python outputs:
+### Verify R Installation
 
 ```bash
-# Enter container with your data mounted
-docker run -it --rm -v $(pwd):/workspace secactpy:latest
+docker run --rm secactpy:with-r Rscript -e "
+cat('R version:', R.version.string, '\n')
 
-# Run R inference
+# Check packages
+for (pkg in c('SecAct', 'RidgeR', 'SpaCET', 'Biobase')) {
+    if (require(pkg, quietly = TRUE, character.only = TRUE)) {
+        cat(pkg, 'OK -', as.character(packageVersion(pkg)), '\n')
+    } else {
+        cat(pkg, 'NOT FOUND\n')
+    }
+}
+"
+```
+
+### Cross-Validation (R vs Python)
+
+```bash
+# Enter container with R
+docker run -it --rm -v $(pwd):/workspace secactpy:with-r
+
+# Inside container - Run R inference
 Rscript -e "
 library(SecAct)
 data <- read.table('your_data.txt', row.names=1, header=TRUE)
@@ -186,54 +250,25 @@ docker run --rm --gpus all secactpy:gpu nvidia-smi
 docker run --rm --gpus all secactpy:gpu python -c "
 import cupy as cp
 print(f'CuPy version: {cp.__version__}')
-print(f'CUDA version: {cp.cuda.runtime.runtimeGetVersion()}')
+x = cp.arange(10)
+print(f'GPU array: {x}')
 "
 ```
 
-## Customization
-
-### Build Arguments
-
-The unified Dockerfile supports the following build arguments:
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `USE_GPU` | `false` | Set to `true` for GPU support |
-| `INSTALL_R` | `true` | Set to `false` to skip R/SecAct (faster build) |
-
-```bash
-# Examples
-docker build -t secactpy:cpu .                                              # CPU, Python only (fast)
-docker build -t secactpy:cpu-with-r --build-arg INSTALL_R=true .            # CPU, with R
-docker build -t secactpy:gpu --build-arg USE_GPU=true .                     # GPU, Python only
-docker build -t secactpy:gpu-with-r --build-arg USE_GPU=true --build-arg INSTALL_R=true .  # GPU, with R
-```
-
-### Add Your Own Packages
-
-Create a custom Dockerfile:
-
-```dockerfile
-FROM secactpy:latest
-
-# Add R packages (if R is installed)
-RUN R -e "install.packages('your_package', repos='https://cloud.r-project.org/')" || true
-
-# Add Python packages
-RUN pip3 install your_package
-```
-
-### Mount Additional Data
-
-```bash
-docker run -it --rm \
-  -v $(pwd):/workspace \
-  -v /path/to/data:/data:ro \
-  -v /path/to/results:/results \
-  secactpy:latest
-```
-
 ## Troubleshooting
+
+### R Package Installation Failures
+
+If R packages fail to install, try building with verbose output:
+
+```bash
+docker build -t secactpy:with-r --build-arg INSTALL_R=true --progress=plain .
+```
+
+Common issues:
+- **Network timeout**: Increase timeout in Dockerfile or retry
+- **Missing system library**: Add to apt-get install list
+- **GitHub rate limit**: Wait and retry, or use a GitHub token
 
 ### Permission Issues
 
@@ -262,28 +297,45 @@ docker info | grep -i gpu
 which nvidia-container-toolkit
 ```
 
-## Image Sizes
+## Customization
 
-| Build | Base Image | Approximate Size |
-|-------|------------|-----------------|
-| CPU, no R | ubuntu:22.04 | ~2 GB |
-| CPU, with R | ubuntu:22.04 | ~3.5 GB |
-| GPU, no R | nvidia/cuda:11.8.0 | ~6 GB |
-| GPU, with R | nvidia/cuda:11.8.0 | ~8 GB |
+### Add Your Own Packages
 
-> **Note**: CI/CD builds use `INSTALL_R=false` for faster builds. For local builds with R validation, use `--build-arg INSTALL_R=true`.
+Create a custom Dockerfile:
 
-## Pushing to Docker Hub
+```dockerfile
+FROM secactpy:with-r
+
+# Add R packages
+RUN R -e "install.packages('your_r_package', repos='https://cloud.r-project.org/')"
+RUN R -e "BiocManager::install('bioc_package')"
+RUN R -e "remotes::install_github('user/repo')"
+
+# Add Python packages
+RUN pip3 install your_python_package
+```
+
+### Mount Additional Data
 
 ```bash
-# Tag
-docker tag secactpy:latest yourusername/secactpy:latest
-docker tag secactpy:gpu yourusername/secactpy:gpu
+docker run -it --rm \
+  -v $(pwd):/workspace \
+  -v /path/to/data:/data:ro \
+  -v /path/to/results:/results \
+  secactpy:latest
+```
 
-# Login
-docker login
+## CI/CD Notes
 
-# Push
-docker push yourusername/secactpy:latest
-docker push yourusername/secactpy:gpu
+- Default CI builds use `INSTALL_R=false` for speed
+- R-enabled builds are triggered on releases or manual dispatch
+- Use `workflow_dispatch` with `build_r=true` to build R images manually
+
+```yaml
+# Trigger R build manually in GitHub Actions
+workflow_dispatch:
+  inputs:
+    build_r:
+      description: 'Build images with R packages'
+      default: 'true'
 ```

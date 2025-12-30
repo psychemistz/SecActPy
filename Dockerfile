@@ -1,5 +1,5 @@
 # =============================================================================
-# SecActPy + SecAct Unified Docker Image
+# SecActPy + SecAct/RidgeR Unified Docker Image
 # 
 # Single Dockerfile for both CPU and GPU versions
 #
@@ -9,7 +9,7 @@
 # Build GPU version:
 #   docker build -t secactpy:gpu --build-arg USE_GPU=true .
 #
-# Build with R SecAct package (slower):
+# Build with R SecAct/RidgeR package (slower):
 #   docker build -t secactpy:with-r --build-arg INSTALL_R=true .
 #   docker build -t secactpy:gpu-with-r --build-arg USE_GPU=true --build-arg INSTALL_R=true .
 #
@@ -57,7 +57,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Build tools
     build-essential \
     gfortran \
-    # Libraries
+    cmake \
+    pkg-config \
+    # Libraries for R packages
     libcurl4-openssl-dev \
     libssl-dev \
     libxml2-dev \
@@ -66,34 +68,172 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfontconfig1-dev \
     libharfbuzz-dev \
     libfribidi-dev \
+    libfreetype6-dev \
     libpng-dev \
     libtiff5-dev \
     libjpeg-dev \
+    libcairo2-dev \
+    libxt-dev \
+    libmagick++-dev \
+    libudunits2-dev \
+    libgdal-dev \
+    libgeos-dev \
+    libproj-dev \
+    # For R Matrix package
+    liblapack-dev \
+    libblas-dev \
     # Utilities
     git \
     wget \
     curl \
     vim \
+    locales \
     software-properties-common \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
+# Set locale (needed for some R packages)
+RUN locale-gen en_US.UTF-8
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
 # =============================================================================
-# R: Install SecAct (optional)
+# R: Install R and Packages (optional)
 # =============================================================================
 
 ARG INSTALL_R
 RUN if [ "$INSTALL_R" = "true" ]; then \
-        echo "Installing R and SecAct..." && \
+        echo "========================================" && \
+        echo "Installing R..." && \
+        echo "========================================" && \
+        # Add CRAN repository for latest R
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+            dirmngr \
+            gnupg \
+            apt-transport-https \
+            ca-certificates && \
+        wget -qO- https://cloud.r-project.org/bin/linux/ubuntu/marutter_pubkey.asc | \
+            gpg --dearmor -o /usr/share/keyrings/r-project.gpg && \
+        echo "deb [signed-by=/usr/share/keyrings/r-project.gpg] https://cloud.r-project.org/bin/linux/ubuntu jammy-cran40/" | \
+            tee /etc/apt/sources.list.d/r-project.list && \
         apt-get update && \
         apt-get install -y --no-install-recommends r-base r-base-dev && \
-        rm -rf /var/lib/apt/lists/* && \
-        R -e "install.packages(c('remotes', 'BiocManager'), repos='https://cloud.r-project.org/')" && \
-        R -e "BiocManager::install(c('Biobase'), ask=FALSE, update=FALSE)" && \
-        R -e "options(timeout=600); remotes::install_github('data2intelligence/SecAct', dependencies=TRUE, upgrade='never')" && \
-        R -e "library(SecAct); cat('SecAct installed successfully\n')"; \
+        rm -rf /var/lib/apt/lists/*; \
     else \
         echo "Skipping R installation"; \
+    fi
+
+# Install R packages in stages for better error handling
+ARG INSTALL_R
+RUN if [ "$INSTALL_R" = "true" ]; then \
+        echo "========================================" && \
+        echo "Installing CRAN packages..." && \
+        echo "========================================" && \
+        R -e "options(repos = c(CRAN = 'https://cloud.r-project.org/')); \
+              install.packages(c( \
+                  'remotes', \
+                  'BiocManager', \
+                  'devtools', \
+                  'Matrix', \
+                  'ggplot2', \
+                  'dplyr', \
+                  'tidyr', \
+                  'data.table', \
+                  'Rcpp', \
+                  'RcppArmadillo', \
+                  'RcppEigen', \
+                  'httr', \
+                  'jsonlite', \
+                  'R6', \
+                  'crayon' \
+              ), dependencies = TRUE)"; \
+    fi
+
+# Install Bioconductor packages
+ARG INSTALL_R
+RUN if [ "$INSTALL_R" = "true" ]; then \
+        echo "========================================" && \
+        echo "Installing Bioconductor packages..." && \
+        echo "========================================" && \
+        R -e "BiocManager::install(version = '3.18', ask = FALSE, update = FALSE)" && \
+        R -e "BiocManager::install(c( \
+                  'Biobase', \
+                  'S4Vectors', \
+                  'IRanges', \
+                  'GenomicRanges', \
+                  'SummarizedExperiment', \
+                  'SingleCellExperiment' \
+              ), ask = FALSE, update = FALSE)"; \
+    fi
+
+# Install SecAct from GitHub
+ARG INSTALL_R
+RUN if [ "$INSTALL_R" = "true" ]; then \
+        echo "========================================" && \
+        echo "Installing SecAct from GitHub..." && \
+        echo "========================================" && \
+        R -e "options(timeout = 600); \
+              remotes::install_github('data2intelligence/SecAct', \
+                  dependencies = TRUE, \
+                  upgrade = 'never', \
+                  force = TRUE)" && \
+        R -e "library(SecAct); cat('SecAct version:', as.character(packageVersion('SecAct')), '\n')"; \
+    fi
+
+# Install RidgeR from GitHub (optional, for cross-validation)
+ARG INSTALL_R
+RUN if [ "$INSTALL_R" = "true" ]; then \
+        echo "========================================" && \
+        echo "Installing RidgeR from GitHub..." && \
+        echo "========================================" && \
+        R -e "options(timeout = 600); \
+              tryCatch({ \
+                  remotes::install_github('psychemistz/RidgeR', \
+                      dependencies = TRUE, \
+                      upgrade = 'never', \
+                      force = TRUE); \
+                  library(RidgeR); \
+                  cat('RidgeR version:', as.character(packageVersion('RidgeR')), '\n') \
+              }, error = function(e) { \
+                  cat('RidgeR installation skipped:', conditionMessage(e), '\n') \
+              })"; \
+    fi
+
+# Install SpaCET from GitHub (optional, for spatial transcriptomics)
+ARG INSTALL_R
+RUN if [ "$INSTALL_R" = "true" ]; then \
+        echo "========================================" && \
+        echo "Installing SpaCET from GitHub..." && \
+        echo "========================================" && \
+        R -e "options(timeout = 600); \
+              tryCatch({ \
+                  remotes::install_github('data2intelligence/SpaCET', \
+                      dependencies = TRUE, \
+                      upgrade = 'never', \
+                      force = TRUE); \
+                  library(SpaCET); \
+                  cat('SpaCET version:', as.character(packageVersion('SpaCET')), '\n') \
+              }, error = function(e) { \
+                  cat('SpaCET installation skipped:', conditionMessage(e), '\n') \
+              })"; \
+    fi
+
+# Verify R installation
+ARG INSTALL_R
+RUN if [ "$INSTALL_R" = "true" ]; then \
+        echo "========================================" && \
+        echo "Verifying R installation..." && \
+        echo "========================================" && \
+        R -e "cat('R version:', R.version.string, '\n'); \
+              installed <- installed.packages()[, 'Package']; \
+              for (pkg in c('SecAct', 'Biobase', 'Matrix')) { \
+                  if (pkg %in% installed) { \
+                      cat(pkg, 'OK\n') \
+                  } else { \
+                      cat(pkg, 'NOT FOUND\n') \
+                  } \
+              }"; \
     fi
 
 # =============================================================================
@@ -125,11 +265,11 @@ RUN if [ "$USE_GPU" = "true" ]; then \
         echo "Skipping CuPy (CPU-only build)"; \
     fi
 
-# Install SecActPy
+# Install SecActPy from GitHub
 RUN pip3 install --no-cache-dir git+https://github.com/psychemistz/SecActPy.git
 
 # Verify Python installation
-RUN python3 -c "import secactpy; print(f'SecActPy OK, GPU: {secactpy.CUPY_AVAILABLE}')"
+RUN python3 -c "import secactpy; print(f'SecActPy {secactpy.__version__} OK, GPU: {secactpy.CUPY_AVAILABLE}')"
 
 # =============================================================================
 # Environment
@@ -156,5 +296,5 @@ CMD ["/bin/bash"]
 # =============================================================================
 
 LABEL maintainer="Seongyong Park"
-LABEL description="SecActPy + SecAct R package (CPU/GPU unified)"
+LABEL description="SecActPy + SecAct/RidgeR (CPU/GPU unified)"
 LABEL version="0.1.1"
