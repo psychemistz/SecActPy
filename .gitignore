@@ -220,6 +220,15 @@ dataset/output/signature/scRNAseq/._*.csv
 dataset/output/signature/ST/._*.txt
 dataset/output/signature/ST/._*.csv
 
-dataset
+# script cache
 tests/._*.py
 secactpy/._*.py
+
+# large files
+dataset/input/CosMx_LIHC
+dataset/input/LIHC_CosMx_data.h5ad
+dataset/input/OV_scRNAseq_data.h5ad
+dataset/input/Visium_HCC
+dataset/input/*.rda
+dataset/input/*.h5Seurat
+dataset/output/*
