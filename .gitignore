@@ -225,6 +225,7 @@ tests/._*.py
 secactpy/._*.py
 
 # large files
+dataset
 dataset/input/CosMx_LIHC
 dataset/input/LIHC_CosMx_data.h5ad
 dataset/input/OV_scRNAseq_data.h5ad
