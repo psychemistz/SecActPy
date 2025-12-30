@@ -143,7 +143,8 @@ def estimate_memory(
     # Beta batch: (n_features, batch_size)
     beta_batch_bytes = n_features * batch_size * bytes_per_float
 
-    to_gb = lambda x: x / (1024 ** 3)
+    def to_gb(x):
+        return x / (1024 ** 3)
 
     estimates = {
         'T_matrix': to_gb(T_bytes),
@@ -608,7 +609,7 @@ def ridge_batch(
     n_batches = math.ceil(n_samples / batch_size)
 
     if verbose:
-        print(f"Ridge batch processing:")
+        print("Ridge batch processing:")
         print(f"  Data: {n_genes} genes, {n_features} features, {n_samples} samples")
         print(f"  Batches: {n_batches} (size={batch_size})")
         mem = estimate_memory(n_genes, n_features, n_samples, n_rand, batch_size)
@@ -1149,7 +1150,7 @@ def _ridge_batch_sparse_preserving_gpu(
     n_samples = Y.shape[1]
 
     if verbose:
-        print(f"  Transferring data to GPU...")
+        print("  Transferring data to GPU...")
 
     # Transfer to GPU
     T_gpu = cp.asarray(T, dtype=cp.float64)
@@ -1229,7 +1230,7 @@ def _ridge_batch_sparse_preserving_gpu(
     mean_gpu = aver_gpu / n_rand
     var_gpu = (aver_sq_gpu / n_rand) - (mean_gpu ** 2)
     se_gpu = cp.sqrt(cp.maximum(var_gpu, 0.0))
-    zscore_gpu = cp.where(se_gpu > EPS, (beta_gpu - mean) / se_gpu, 0.0)
+    zscore_gpu = cp.where(se_gpu > EPS, (beta_gpu - mean_gpu) / se_gpu, 0.0)
     pvalue_gpu = (pvalue_counts_gpu + 1.0) / (n_rand + 1.0)
 
     # Transfer results to CPU
@@ -1302,7 +1303,7 @@ if __name__ == "__main__":
         verbose=True
     )
 
-    print(f"\n   Results:")
+    print("\n   Results:")
     print(f"   - beta shape: {result['beta'].shape}")
     print(f"   - pvalue range: [{result['pvalue'].min():.4f}, {result['pvalue'].max():.4f}]")
     print(f"   - n_batches: {result['n_batches']}")

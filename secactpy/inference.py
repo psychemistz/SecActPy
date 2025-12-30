@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional, Union, Any, Literal
 import time
 
-from .ridge import ridge, compute_projection_matrix, CUPY_AVAILABLE
+from .ridge import ridge
 
 __all__ = [
     'secact_activity',
@@ -508,7 +508,7 @@ def secact_activity(
         )
 
     if verbose:
-        print(f"SecAct Activity Inference")
+        print("SecAct Activity Inference")
         print(f"  Expression: {expression.shape[0]} genes × {expression.shape[1]} samples")
         print(f"  Signature: {signature.shape[0]} genes × {signature.shape[1]} features")
 
@@ -1166,8 +1166,6 @@ def secact_activity_inference_scrnaseq(
         )
     from scipy import sparse
 
-    from .signature import load_signature
-
     if verbose:
         print("SecActPy scRNAseq Activity Inference")
         print("=" * 50)
@@ -1351,7 +1349,6 @@ def load_visium_10x(
         - 'spot_coordinates': DataFrame with spatial coordinates
         - 'barcodes': list of original barcodes
     """
-    from scipy import sparse
     from scipy.io import mmread
     import gzip
     import json
@@ -1840,7 +1837,7 @@ if __name__ == "__main__":
         columns=[f"Protein_{i}" for i in range(n_features)]
     )
 
-    print(f"\nTest data:")
+    print("\nTest data:")
     print(f"  Expression: {expression.shape}")
     print(f"  Signature: {signature.shape}")
 
@@ -1852,7 +1849,7 @@ if __name__ == "__main__":
         verbose=True
     )
 
-    print(f"\n   Results:")
+    print("\n   Results:")
     print(f"   - beta shape: {result['beta'].shape}")
     print(f"   - pvalue range: [{result['pvalue'].values.min():.4f}, {result['pvalue'].values.max():.4f}]")
     print(f"   - n_genes used: {result['n_genes']}")

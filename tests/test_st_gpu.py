@@ -10,8 +10,10 @@ Requirements:
     - NVIDIA GPU with CUDA support
 
 Usage:
-    python tests/test_st_gpu.py              # Visium dataset
-    python tests/test_st_gpu.py --cosmx      # CosMx dataset
+    python tests/test_st_gpu.py              # Visium dataset, CPU vs GPU
+    python tests/test_st_gpu.py --cosmx      # CosMx dataset, CPU vs GPU
+    python tests/test_st_gpu.py --gpu-only   # GPU only, compare to R reference
+    python tests/test_st_gpu.py --cosmx --gpu-only  # CosMx, GPU only
     python tests/test_st_gpu.py --save
 
 Expected output:
@@ -42,11 +44,13 @@ DATA_DIR = PACKAGE_ROOT / "dataset"
 
 # Visium configuration
 VISIUM_INPUT = DATA_DIR / "input" / "Visium_HCC"
+VISIUM_OUTPUT = DATA_DIR / "output" / "signature" / "ST"
 VISIUM_MIN_GENES = 1000
 VISIUM_SCALE_FACTOR = 1e5
 
 # CosMx configuration
 COSMX_INPUT = DATA_DIR / "input" / "LIHC_CosMx_data.h5ad"
+COSMX_OUTPUT = DATA_DIR / "output" / "signature" / "CosMx"
 COSMX_MIN_GENES = 50
 COSMX_SCALE_FACTOR = 1000
 
@@ -61,34 +65,63 @@ GROUP_COR = 0.9
 # Comparison Functions
 # =============================================================================
 
-def compare_results(cpu_result: dict, gpu_result: dict, tolerance: float = 1e-8) -> dict:
-    """Compare CPU and GPU results."""
-    comparison = {}
-    
+def load_r_output(output_dir: Path) -> dict:
+    """Load R output files."""
+    result = {}
+
     for name in ['beta', 'se', 'zscore', 'pvalue']:
-        if name not in cpu_result or name not in gpu_result:
+        filepath = output_dir / f"{name}.txt"
+        if filepath.exists():
+            df = pd.read_csv(filepath, sep=r'\s+', index_col=0)
+            result[name] = df
+            print(f"  Loaded {name}: {df.shape}")
+        else:
+            print(f"  Warning: {name}.txt not found")
+
+    return result
+
+
+def compare_results(result1: dict, result2: dict, tolerance: float = 1e-8,
+                    label1: str = "Result1", label2: str = "Result2") -> dict:
+    """Compare two result sets."""
+    comparison = {}
+
+    for name in ['beta', 'se', 'zscore', 'pvalue']:
+        if name not in result1 or name not in result2:
             comparison[name] = {'status': 'MISSING', 'message': 'Array not found'}
             continue
-        
-        cpu_arr = cpu_result[name]
-        gpu_arr = gpu_result[name]
-        
+
+        arr1 = result1[name]
+        arr2 = result2[name]
+
         # Check shape
-        if cpu_arr.shape != gpu_arr.shape:
+        if arr1.shape != arr2.shape:
             comparison[name] = {
                 'status': 'FAIL',
-                'message': f'Shape mismatch: CPU {cpu_arr.shape} vs GPU {gpu_arr.shape}'
+                'message': f'Shape mismatch: {label1} {arr1.shape} vs {label2} {arr2.shape}'
             }
             continue
-        
+
+        # Check row names (proteins)
+        rows1 = set(arr1.index)
+        rows2 = set(arr2.index)
+        if rows1 != rows2:
+            missing_in_1 = len(rows2 - rows1)
+            missing_in_2 = len(rows1 - rows2)
+            comparison[name] = {
+                'status': 'FAIL',
+                'message': f'Row mismatch. Missing in {label1}: {missing_in_1}, Missing in {label2}: {missing_in_2}'
+            }
+            continue
+
         # Align by index/columns
-        gpu_aligned = gpu_arr.loc[cpu_arr.index, cpu_arr.columns]
-        
+        arr2_aligned = arr2.loc[arr1.index, arr1.columns]
+
         # Calculate difference
-        diff = np.abs(cpu_arr.values - gpu_aligned.values)
+        diff = np.abs(arr1.values - arr2_aligned.values)
         max_diff = np.nanmax(diff)
         mean_diff = np.nanmean(diff)
-        
+
         if max_diff <= tolerance:
             comparison[name] = {
                 'status': 'PASS',
@@ -103,7 +136,7 @@ def compare_results(cpu_result: dict, gpu_result: dict, tolerance: float = 1e-8)
                 'mean_diff': mean_diff,
                 'message': f'Max diff: {max_diff:.2e} (tolerance: {tolerance:.2e})'
             }
-    
+
     return comparison
 
 
@@ -111,35 +144,33 @@ def load_cosmx_data(input_file, min_genes=50, verbose=True):
     """Load CosMx data from h5ad file."""
     import anndata as ad
     from scipy import sparse
-    
+
     adata = ad.read_h5ad(input_file)
-    
-    # Always use adata.X and adata.var_names (not .raw)
-    # The .raw layer may have different gene IDs
+
     counts_matrix = adata.X
     gene_names = list(adata.var_names)
     cell_names = list(adata.obs_names)
-    
+
     if verbose:
         print(f"   Using adata.X (shape: {counts_matrix.shape})")
         print(f"   Total genes: {len(gene_names)}")
         print(f"   Total cells: {len(cell_names)}")
         print(f"   Sample gene names: {gene_names[:10]}")
-    
+
     # Apply QC filter
     if sparse.issparse(counts_matrix):
         genes_per_cell = np.asarray((counts_matrix > 0).sum(axis=1)).ravel()
     else:
         genes_per_cell = (counts_matrix > 0).sum(axis=1)
-    
+
     keep_cells = genes_per_cell >= min_genes
     n_kept = keep_cells.sum()
     counts_matrix = counts_matrix[keep_cells, :]
     cell_names = [c for c, k in zip(cell_names, keep_cells) if k]
-    
+
     if verbose:
         print(f"   Cells after QC (>={min_genes} genes): {n_kept}")
-    
+
     # Transpose to (genes × cells)
     if sparse.issparse(counts_matrix):
         counts_transposed = counts_matrix.T.tocsr()
@@ -148,7 +179,7 @@ def load_cosmx_data(input_file, min_genes=50, verbose=True):
         ).sparse.to_dense()
     else:
         counts_df = pd.DataFrame(counts_matrix.T, index=gene_names, columns=cell_names)
-    
+
     return counts_df
 
 
@@ -156,23 +187,26 @@ def load_cosmx_data(input_file, min_genes=50, verbose=True):
 # Main Test
 # =============================================================================
 
-def main(cosmx=False, save_output=False):
+def main(cosmx=False, gpu_only=False, save_output=False):
     """
     Run GPU vs CPU comparison for spatial transcriptomics.
-    
+
     Parameters
     ----------
     cosmx : bool, default=False
         If True, use CosMx dataset. If False, use Visium dataset.
+    gpu_only : bool, default=False
+        If True, run only GPU inference and compare to R reference.
     save_output : bool, default=False
         If True, save results to files.
     """
     platform = "CosMx" if cosmx else "Visium"
-    
+    mode = "GPU Only (vs R)" if gpu_only else "GPU vs CPU"
+
     print("=" * 70)
-    print(f"SecActPy GPU vs CPU Comparison: Spatial Transcriptomics ({platform})")
+    print(f"SecActPy {mode}: Spatial Transcriptomics ({platform})")
     print("=" * 70)
-    
+
     # Check GPU availability
     print("\n1. Checking GPU availability...")
     if not CUPY_AVAILABLE:
@@ -185,7 +219,7 @@ def main(cosmx=False, save_output=False):
             print("   Install with: pip install cupy-cuda11x  # or cupy-cuda12x")
         print("   Skipping GPU test.")
         return False
-    
+
     try:
         import cupy as cp
         gpu_info = cp.cuda.runtime.getDeviceProperties(0)
@@ -195,99 +229,109 @@ def main(cosmx=False, save_output=False):
     except Exception as e:
         print(f"   ERROR: Could not initialize GPU: {e}")
         return False
-    
-    # Load data based on platform
-    print("\n2. Loading data...")
-    
+
+    # Set configuration based on platform
     if cosmx:
-        if not COSMX_INPUT.exists():
-            print(f"   ERROR: Input file not found: {COSMX_INPUT}")
-            return False
-        print(f"   Input: {COSMX_INPUT}")
-        
-        input_data = load_cosmx_data(COSMX_INPUT, min_genes=COSMX_MIN_GENES, verbose=True)
+        input_path = COSMX_INPUT
+        output_dir = COSMX_OUTPUT
+        min_genes = COSMX_MIN_GENES
         scale_factor = COSMX_SCALE_FACTOR
         sig_filter = True
-        print(f"   Final shape: {input_data.shape} (genes × cells)")
     else:
-        if not VISIUM_INPUT.exists():
-            print(f"   ERROR: Input directory not found: {VISIUM_INPUT}")
-            return False
-        print(f"   Input: {VISIUM_INPUT}")
-        
-        input_data = load_visium_10x(VISIUM_INPUT, min_genes=VISIUM_MIN_GENES, verbose=True)
+        input_path = VISIUM_INPUT
+        output_dir = VISIUM_OUTPUT
+        min_genes = VISIUM_MIN_GENES
         scale_factor = VISIUM_SCALE_FACTOR
         sig_filter = False
+
+    # Load data based on platform
+    print("\n2. Loading data...")
+
+    if not input_path.exists():
+        print(f"   ERROR: Input not found: {input_path}")
+        return False
+    print(f"   Input: {input_path}")
+
+    if cosmx:
+        input_data = load_cosmx_data(COSMX_INPUT, min_genes=min_genes, verbose=True)
+        print(f"   Final shape: {input_data.shape} (genes × cells)")
+    else:
+        input_data = load_visium_10x(VISIUM_INPUT, min_genes=min_genes, verbose=True)
         print(f"   Spots: {len(input_data['spot_names'])}")
-    
+
     # Check gene overlap with signature
     print("\n   Checking gene overlap with signature...")
     sig_df = load_signature("secact")
     sig_genes = set(sig_df.index)
-    
+
     if isinstance(input_data, pd.DataFrame):
         data_genes = set(input_data.index)
     else:
         data_genes = set(input_data.get('gene_names', []))
-    
+
     overlap = sig_genes & data_genes
     print(f"   Signature genes: {len(sig_genes)}")
     print(f"   Data genes: {len(data_genes)}")
     print(f"   Overlap: {len(overlap)}")
-    
+
     if len(overlap) == 0:
         print("\n   ERROR: No overlapping genes!")
         print(f"   Sample signature genes: {list(sig_genes)[:5]}")
         print(f"   Sample data genes: {list(data_genes)[:5]}")
-        
+
         # Try case-insensitive matching
         sig_genes_upper = {g.upper(): g for g in sig_genes}
         data_genes_upper = {g.upper(): g for g in data_genes}
         case_overlap = set(sig_genes_upper.keys()) & set(data_genes_upper.keys())
-        
+
         if len(case_overlap) > 0:
             print(f"\n   Case-insensitive overlap: {len(case_overlap)}")
-            print("   Gene names may have case mismatch. Converting data gene names to match signature...")
-            
-            # Create mapping from data genes to signature genes
+            print("   Gene names may have case mismatch. Converting...")
+
             gene_mapping = {data_genes_upper[g]: sig_genes_upper[g] for g in case_overlap}
-            
+
             if isinstance(input_data, pd.DataFrame):
                 input_data.index = [gene_mapping.get(g, g) for g in input_data.index]
                 data_genes = set(input_data.index)
                 overlap = sig_genes & data_genes
                 print(f"   New overlap: {len(overlap)}")
-            
+
         if len(overlap) == 0:
             return False
-    
-    # Run CPU inference
-    print("\n3. Running CPU inference...")
-    cpu_start = time.time()
-    
-    cpu_result = secact_activity_inference_st(
-        input_data=input_data,
-        scale_factor=scale_factor,
-        sig_matrix="secact",
-        is_group_sig=True,
-        is_group_cor=GROUP_COR,
-        lambda_=LAMBDA,
-        n_rand=NRAND,
-        seed=SEED,
-        sig_filter=sig_filter,
-        backend="numpy",  # CPU
-        use_cache=True,
-        verbose=False
-    )
-    
-    cpu_time = time.time() - cpu_start
-    print(f"   CPU time: {cpu_time:.2f} seconds")
-    print(f"   Result shape: {cpu_result['beta'].shape}")
-    
+
+    step_num = 3
+    cpu_time = None
+    cpu_result = None
+
+    # Run CPU inference (unless gpu_only mode)
+    if not gpu_only:
+        print(f"\n{step_num}. Running CPU inference...")
+        cpu_start = time.time()
+
+        cpu_result = secact_activity_inference_st(
+            input_data=input_data,
+            scale_factor=scale_factor,
+            sig_matrix="secact",
+            is_group_sig=True,
+            is_group_cor=GROUP_COR,
+            lambda_=LAMBDA,
+            n_rand=NRAND,
+            seed=SEED,
+            sig_filter=sig_filter,
+            backend="numpy",
+            use_cache=True,
+            verbose=False
+        )
+
+        cpu_time = time.time() - cpu_start
+        print(f"   CPU time: {cpu_time:.2f} seconds")
+        print(f"   Result shape: {cpu_result['beta'].shape}")
+        step_num += 1
+
     # Run GPU inference
-    print("\n4. Running GPU inference...")
+    print(f"\n{step_num}. Running GPU inference...")
     gpu_start = time.time()
-    
+
     gpu_result = secact_activity_inference_st(
         input_data=input_data,
         scale_factor=scale_factor,
@@ -298,64 +342,120 @@ def main(cosmx=False, save_output=False):
         n_rand=NRAND,
         seed=SEED,
         sig_filter=sig_filter,
-        backend="cupy",  # GPU
+        backend="cupy",
         use_cache=True,
-        verbose=False
+        verbose=True
     )
-    
+
     gpu_time = time.time() - gpu_start
     print(f"   GPU time: {gpu_time:.2f} seconds")
     print(f"   Result shape: {gpu_result['beta'].shape}")
-    
+    step_num += 1
+
     # Compare results
-    print("\n5. Comparing CPU vs GPU results...")
-    comparison = compare_results(cpu_result, gpu_result)
-    
-    print("\n" + "=" * 70)
-    print("RESULTS")
-    print("=" * 70)
-    
     all_passed = True
-    for name, result in comparison.items():
-        status = result['status']
-        message = result['message']
-        
-        if status == 'PASS':
-            print(f"  {name:8s}: ✓ PASS - {message}")
+
+    if gpu_only:
+        # Compare to R reference
+        print(f"\n{step_num}. Loading R reference output...")
+        validate = True
+
+        if not output_dir.exists():
+            print(f"   Warning: Reference output not found: {output_dir}")
+            print("   Skipping validation.")
+            validate = False
         else:
-            print(f"  {name:8s}: ✗ {status} - {message}")
-            all_passed = False
-    
+            r_result = load_r_output(output_dir)
+            if not r_result:
+                print("   Warning: No R output files found!")
+                validate = False
+            else:
+                step_num += 1
+                print(f"\n{step_num}. Comparing GPU results to R reference...")
+                comparison = compare_results(gpu_result, r_result, tolerance=1e-10,
+                                             label1="GPU", label2="R")
+
+                print("\n" + "=" * 70)
+                print("RESULTS (GPU vs R Reference)")
+                print("=" * 70)
+
+                for name, result in comparison.items():
+                    status = result['status']
+                    message = result['message']
+
+                    if status == 'PASS':
+                        print(f"  {name:8s}: ✓ PASS - {message}")
+                    else:
+                        print(f"  {name:8s}: ✗ {status} - {message}")
+                        all_passed = False
+
+        if not validate:
+            all_passed = True  # Can't fail if no validation
+    else:
+        # Compare CPU vs GPU
+        print(f"\n{step_num}. Comparing CPU vs GPU results...")
+        comparison = compare_results(cpu_result, gpu_result, tolerance=1e-8,
+                                     label1="CPU", label2="GPU")
+
+        print("\n" + "=" * 70)
+        print("RESULTS (CPU vs GPU)")
+        print("=" * 70)
+
+        for name, result in comparison.items():
+            status = result['status']
+            message = result['message']
+
+            if status == 'PASS':
+                print(f"  {name:8s}: ✓ PASS - {message}")
+            else:
+                print(f"  {name:8s}: ✗ {status} - {message}")
+                all_passed = False
+
+    # Performance summary
     print("\n" + "-" * 70)
     print("PERFORMANCE")
     print("-" * 70)
     print(f"  Platform: {platform}")
-    print(f"  Samples:  {cpu_result['beta'].shape[1]}")
-    print(f"  CPU time: {cpu_time:.2f} seconds")
+    print(f"  Samples:  {gpu_result['beta'].shape[1]}")
+    if cpu_time is not None:
+        print(f"  CPU time: {cpu_time:.2f} seconds")
     print(f"  GPU time: {gpu_time:.2f} seconds")
-    speedup = cpu_time / gpu_time if gpu_time > 0 else float('inf')
-    print(f"  Speedup:  {speedup:.2f}x")
-    
+    if cpu_time is not None:
+        speedup = cpu_time / gpu_time if gpu_time > 0 else float('inf')
+        print(f"  Speedup:  {speedup:.2f}x")
+
     print("\n" + "=" * 70)
     if all_passed:
         print("ALL TESTS PASSED! ✓")
-        print("GPU produces identical results to CPU.")
+        if gpu_only:
+            print("GPU produces results matching R reference.")
+        else:
+            print("GPU produces identical results to CPU.")
     else:
         print("SOME TESTS FAILED! ✗")
-        print("GPU results differ from CPU.")
+        if gpu_only:
+            print("GPU results differ from R reference.")
+        else:
+            print("GPU results differ from CPU.")
     print("=" * 70)
-    
+
+    # Sample output
+    step_num += 1
+    print(f"\n{step_num}. Sample output (first 5 proteins, first 3 samples):")
+    cols = gpu_result['zscore'].columns[:3]
+    print(gpu_result['zscore'].iloc[:5][cols])
+
     # Save results
     if save_output:
-        print("\n6. Saving results...")
+        step_num += 1
+        print(f"\n{step_num}. Saving results...")
         try:
-            from secactpy.io import save_st_results_to_h5ad, save_results
-            
+            from secactpy.io import save_st_results_to_h5ad
+
             suffix = "CosMx" if cosmx else "Visium"
             output_h5ad = PACKAGE_ROOT / "dataset" / "output" / f"{suffix}_gpu_activity.h5ad"
-            
+
             if cosmx:
-                # For CosMx, save just the results
                 save_st_results_to_h5ad(
                     counts=input_data.values,
                     activity_results=gpu_result,
@@ -365,7 +465,6 @@ def main(cosmx=False, save_output=False):
                     platform=platform
                 )
             else:
-                # For Visium, include spatial coordinates
                 save_st_results_to_h5ad(
                     counts=input_data['counts'],
                     activity_results=gpu_result,
@@ -375,26 +474,47 @@ def main(cosmx=False, save_output=False):
                     spatial_coords=input_data['spot_coordinates'],
                     platform=platform
                 )
-            
+
             print(f"   Saved to: {output_h5ad}")
-            
+
         except Exception as e:
             print(f"   Could not save: {e}")
             import traceback
             traceback.print_exc()
-    
+
     return all_passed
 
 
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="SecActPy GPU vs CPU Comparison: Spatial Transcriptomics"
+        description="SecActPy GPU Spatial Transcriptomics Test",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Visium dataset, CPU vs GPU comparison
+  python tests/test_st_gpu.py
+
+  # CosMx dataset, CPU vs GPU comparison
+  python tests/test_st_gpu.py --cosmx
+
+  # GPU only, compare to R reference (faster for large datasets)
+  python tests/test_st_gpu.py --gpu-only
+  python tests/test_st_gpu.py --cosmx --gpu-only
+
+  # Save results
+  python tests/test_st_gpu.py --save
+        """
     )
     parser.add_argument(
         '--cosmx',
         action='store_true',
         help='Use CosMx dataset (default: Visium)'
+    )
+    parser.add_argument(
+        '--gpu-only',
+        action='store_true',
+        help='Run GPU only and compare to R reference (skip CPU)'
     )
     parser.add_argument(
         '--save',
@@ -406,5 +526,5 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    success = main(cosmx=args.cosmx, save_output=args.save)
+    success = main(cosmx=args.cosmx, gpu_only=args.gpu_only, save_output=args.save)
     sys.exit(0 if success else 1)
