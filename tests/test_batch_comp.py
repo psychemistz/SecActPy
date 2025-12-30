@@ -447,6 +447,7 @@ def test_scrnaseq_comparison(n_cells: int = 5000, use_gpu: bool = False):
         n_rand=N_RAND, 
         seed=SEED, 
         backend=backend,
+        use_cache=True,
         verbose=True
     )
     t_std = time.time() - t_start
@@ -466,6 +467,7 @@ def test_scrnaseq_comparison(n_cells: int = 5000, use_gpu: bool = False):
         seed=SEED,
         batch_size=batch_size,
         backend=backend,
+        use_cache=True,
         verbose=True
     )
     t_batch = time.time() - t_start
@@ -488,6 +490,7 @@ def test_scrnaseq_comparison(n_cells: int = 5000, use_gpu: bool = False):
         seed=SEED,
         use_cache=True,
         backend=backend,
+        use_cache=True,
         verbose=True
     )
     t_sparse = time.time() - t_start
@@ -578,6 +581,7 @@ def test_st_comparison(n_spots: int = 10000, use_gpu: bool = False):
         n_rand=N_RAND, 
         seed=SEED, 
         backend=backend,
+        use_cache=True,
         verbose=True
     )
     t_std = time.time() - t_start
@@ -597,6 +601,7 @@ def test_st_comparison(n_spots: int = 10000, use_gpu: bool = False):
         seed=SEED,
         batch_size=batch_size,
         backend=backend,
+        use_cache=True,
         verbose=True
     )
     t_batch = time.time() - t_start
@@ -617,8 +622,8 @@ def test_st_comparison(n_spots: int = 10000, use_gpu: bool = False):
         proj, Y_sparse, stats,
         n_rand=N_RAND,
         seed=SEED,
-        use_cache=True,
         backend=backend,
+        use_cache=True
         verbose=True
     )
     t_sparse = time.time() - t_start
@@ -748,6 +753,7 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
         n_rand=N_RAND, 
         seed=SEED, 
         backend=backend,
+        use_cache=True,
         verbose=True
     )
     t_std = time.time() - t_start
@@ -767,6 +773,7 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
         seed=SEED,
         batch_size=batch_size,
         backend=backend,
+        use_cache=True,
         verbose=True
     )
     t_batch = time.time() - t_start
@@ -787,8 +794,8 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
         proj, Y_sparse, stats,
         n_rand=N_RAND,
         seed=SEED,
-        use_cache=True,
         backend=backend,
+        use_cache=True,
         verbose=True
     )
     t_sparse = time.time() - t_start
