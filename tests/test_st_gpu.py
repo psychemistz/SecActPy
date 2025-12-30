@@ -72,44 +72,119 @@ def load_r_output_h5ad(output_dir: Path) -> dict:
     """
     Load R output from h5ad file (fast).
 
-    The h5ad file should be created using:
-        Rscript scripts/save_results_h5ad.R <output_dir>
+    Supports two formats:
+    1. New format: X=beta, obsm/{se,zscore,pvalue}
+    2. Old format: obsm/{beta,se,zscore,pvalue}
 
-    Returns dict with 'beta', 'se', 'zscore', 'pvalue' as DataFrames.
+    Returns dict with 'beta', 'se', 'zscore', 'pvalue' as DataFrames (proteins x cells).
     """
-    import anndata as ad
-
-    h5ad_path = output_dir / "results.h5ad"
+    # Try both possible filenames
+    h5ad_path = output_dir / "output.h5ad"
+    if not h5ad_path.exists():
+        h5ad_path = output_dir / "results.h5ad"
     if not h5ad_path.exists():
         return None
 
     print(f"  Loading from h5ad: {h5ad_path}")
     start = time.time()
 
-    adata = ad.read_h5ad(h5ad_path)
+    # Try anndata first (works for standard h5ad files)
+    try:
+        import anndata as ad
+        adata = ad.read_h5ad(h5ad_path)
 
-    # Get protein names
-    protein_names = list(adata.uns.get('protein_names', []))
+        protein_names = list(adata.var_names)
+        cell_names = list(adata.obs_names)
 
-    # Get cell names
-    cell_names = list(adata.obs_names)
+        print(f"    Proteins: {len(protein_names)}, Cells: {len(cell_names)}")
 
-    result = {}
-    for name in ['beta', 'se', 'zscore', 'pvalue']:
-        if name in adata.obsm:
-            # obsm stores (cells x proteins), we need (proteins x cells)
-            arr = adata.obsm[name].T
-            result[name] = pd.DataFrame(
-                arr,
+        result = {}
+
+        # X is beta (cells x proteins), transpose to (proteins x cells)
+        if adata.X is not None:
+            result['beta'] = pd.DataFrame(
+                adata.X.T,
                 index=protein_names,
                 columns=cell_names
             )
-            print(f"    {name}: {result[name].shape}")
+            print(f"    beta: {result['beta'].shape}")
 
-    elapsed = time.time() - start
-    print(f"  Loaded in {elapsed:.1f}s")
+        # Other matrices from obsm
+        for name in ['se', 'zscore', 'pvalue']:
+            if name in adata.obsm:
+                result[name] = pd.DataFrame(
+                    adata.obsm[name].T,
+                    index=protein_names,
+                    columns=cell_names
+                )
+                print(f"    {name}: {result[name].shape}")
 
-    return result
+        elapsed = time.time() - start
+        print(f"  Loaded in {elapsed:.1f}s")
+
+        return result if result else None
+
+    except Exception as e:
+        print(f"  anndata failed: {e}")
+        print("  Trying h5py fallback...")
+
+    # Fallback to h5py for non-standard structures
+    import h5py
+
+    try:
+        with h5py.File(h5ad_path, 'r') as f:
+            # Get protein names
+            if 'var/_index' in f:
+                protein_names = [x.decode() if isinstance(x, bytes) else x
+                                for x in f['var/_index'][:]]
+            elif 'uns/protein_names' in f:
+                protein_names = [x.decode() if isinstance(x, bytes) else x
+                                for x in f['uns/protein_names'][:]]
+            else:
+                print("  Warning: No protein names found in h5ad")
+                return None
+
+            # Get cell names
+            if 'obs/_index' in f:
+                cell_names = [x.decode() if isinstance(x, bytes) else x
+                             for x in f['obs/_index'][:]]
+            else:
+                print("  Warning: No cell names found in h5ad")
+                return None
+
+            print(f"    Proteins: {len(protein_names)}, Cells: {len(cell_names)}")
+
+            result = {}
+
+            # Try X for beta first (new format)
+            if 'X' in f:
+                arr = f['X'][:]
+                if arr.shape == (len(cell_names), len(protein_names)):
+                    arr = arr.T  # Transpose to (proteins, cells)
+                result['beta'] = pd.DataFrame(arr, index=protein_names, columns=cell_names)
+                print(f"    beta: {result['beta'].shape}")
+
+            # Other matrices from obsm (or beta if X wasn't found)
+            for name in ['beta', 'se', 'zscore', 'pvalue']:
+                if name == 'beta' and 'beta' in result:
+                    continue  # Already loaded from X
+
+                key = f'obsm/{name}'
+                if key in f:
+                    arr = f[key][:]
+                    if arr.shape == (len(cell_names), len(protein_names)):
+                        arr = arr.T
+                    result[name] = pd.DataFrame(arr, index=protein_names, columns=cell_names)
+                    print(f"    {name}: {result[name].shape}")
+
+        elapsed = time.time() - start
+        print(f"  Loaded in {elapsed:.1f}s")
+        return result if result else None
+
+    except Exception as e2:
+        print(f"  h5py fallback also failed: {e2}")
+        print("  Falling back to text files...")
+        return None
 
 
 def load_r_output_txt(output_dir: Path) -> dict:
@@ -393,7 +468,8 @@ def main(cosmx=False, gpu_only=False, save_output=False):
             seed=SEED,
             sig_filter=sig_filter,
             backend="numpy",
-            use_cache=True,
+            use_gsl_rng=True,  # Use GSL RNG for R compatibility
+            use_cache=True,  # Caches permutation table to disk
             verbose=False
         )
 
@@ -417,7 +493,8 @@ def main(cosmx=False, gpu_only=False, save_output=False):
         seed=SEED,
         sig_filter=sig_filter,
         backend="cupy",
-        use_cache=True,
+        use_gsl_rng=True,  # Use GSL RNG for R compatibility
+        use_cache=True,  # Caches permutation table to disk for faster repeated runs
         verbose=True
     )
 

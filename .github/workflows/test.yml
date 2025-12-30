@@ -40,7 +40,17 @@ jobs:
         run: python -c "from secactpy import load_signature; s=load_signature('secact'); print('SecAct:', s.shape)"
 
       - name: Test RNG
-        run: python -c "from secactpy.rng import GSLRNG; r=GSLRNG(0); p=list(r.permutation(10)); assert p==[9,2,4,0,5,7,3,6,1,8]; print('RNG OK')"
+        run: |
+          python -c "
+          from secactpy.rng import GSLRNG
+          import numpy as np
+          r = GSLRNG(0)
+          arr = np.arange(10)
+          r.shuffle_inplace(arr)
+          p = arr.tolist()
+          assert p == [9,2,4,0,5,7,3,6,1,8], f'Got {p}'
+          print('RNG OK:', p)
+          "
 
       - name: Test ridge
         run: python -c "import numpy as np; from secactpy import ridge; np.random.seed(0); r=ridge(np.random.randn(50,5), np.random.randn(50,3), n_rand=10); print('Ridge OK:', r['beta'].shape)"

@@ -987,8 +987,11 @@ def secact_activity_inference(
 
     # --- Step 3: Filter signatures if requested ---
     if sig_filter:
+        n_before = X.shape[1]
         available_genes = set(Y.index)
         X = X.loc[:, X.columns.isin(available_genes)]
+        if verbose:
+            print(f"  sig_filter: kept {X.shape[1]} / {n_before} proteins")
 
     # --- Step 4: Group similar signatures if requested ---
     if is_group_sig:

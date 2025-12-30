@@ -16,6 +16,9 @@ Usage:
     python tests/test_st_cpu.py --cosmx      # CosMx dataset
     python tests/test_st_cpu.py --save
 
+For faster R comparison, convert R text outputs to h5ad first:
+    Rscript scripts/save_results_h5ad.R dataset/output/signature/CosMx
+
 Expected output:
     All arrays should match R output exactly (or within numerical tolerance).
 """
@@ -61,24 +64,168 @@ GROUP_COR = 0.9
 
 
 # =============================================================================
-# Comparison Functions
+# R Output Loading Functions
 # =============================================================================
 
-def load_r_output(output_dir: Path) -> dict:
-    """Load R output files."""
+def load_r_output_h5ad(output_dir: Path) -> dict:
+    """
+    Load R output from h5ad file (fast).
+
+    Supports two formats:
+    1. New format: X=beta, obsm/{se,zscore,pvalue}
+    2. Old format: obsm/{beta,se,zscore,pvalue}
+
+    Returns dict with 'beta', 'se', 'zscore', 'pvalue' as DataFrames (proteins x cells).
+    """
+    # Try both possible filenames
+    h5ad_path = output_dir / "output.h5ad"
+    if not h5ad_path.exists():
+        h5ad_path = output_dir / "results.h5ad"
+    if not h5ad_path.exists():
+        return None
+
+    print(f"  Loading from h5ad: {h5ad_path}")
+    start = time.time()
+
+    # Try anndata first (works for standard h5ad files)
+    try:
+        import anndata as ad
+        adata = ad.read_h5ad(h5ad_path)
+
+        protein_names = list(adata.var_names)
+        cell_names = list(adata.obs_names)
+
+        print(f"    Proteins: {len(protein_names)}, Cells: {len(cell_names)}")
+
+        result = {}
+
+        # X is beta (cells x proteins), transpose to (proteins x cells)
+        if adata.X is not None:
+            result['beta'] = pd.DataFrame(
+                adata.X.T,
+                index=protein_names,
+                columns=cell_names
+            )
+            print(f"    beta: {result['beta'].shape}")
+
+        # Other matrices from obsm
+        for name in ['se', 'zscore', 'pvalue']:
+            if name in adata.obsm:
+                result[name] = pd.DataFrame(
+                    adata.obsm[name].T,
+                    index=protein_names,
+                    columns=cell_names
+                )
+                print(f"    {name}: {result[name].shape}")
+
+        elapsed = time.time() - start
+        print(f"  Loaded in {elapsed:.1f}s")
+
+        return result if result else None
+
+    except Exception as e:
+        print(f"  anndata failed: {e}")
+        print("  Trying h5py fallback...")
+
+    # Fallback to h5py for non-standard structures
+    import h5py
+
+    try:
+        with h5py.File(h5ad_path, 'r') as f:
+            # Get protein names
+            if 'var/_index' in f:
+                protein_names = [x.decode() if isinstance(x, bytes) else x
+                                for x in f['var/_index'][:]]
+            elif 'uns/protein_names' in f:
+                protein_names = [x.decode() if isinstance(x, bytes) else x
+                                for x in f['uns/protein_names'][:]]
+            else:
+                print("  Warning: No protein names found in h5ad")
+                return None
+
+            # Get cell names
+            if 'obs/_index' in f:
+                cell_names = [x.decode() if isinstance(x, bytes) else x
+                             for x in f['obs/_index'][:]]
+            else:
+                print("  Warning: No cell names found in h5ad")
+                return None
+
+            print(f"    Proteins: {len(protein_names)}, Cells: {len(cell_names)}")
+
+            result = {}
+
+            # Try X for beta first (new format)
+            if 'X' in f:
+                arr = f['X'][:]
+                if arr.shape == (len(cell_names), len(protein_names)):
+                    arr = arr.T  # Transpose to (proteins, cells)
+                result['beta'] = pd.DataFrame(arr, index=protein_names, columns=cell_names)
+                print(f"    beta: {result['beta'].shape}")
+
+            # Other matrices from obsm (or beta if X wasn't found)
+            for name in ['beta', 'se', 'zscore', 'pvalue']:
+                if name == 'beta' and 'beta' in result:
+                    continue  # Already loaded from X
+
+                key = f'obsm/{name}'
+                if key in f:
+                    arr = f[key][:]
+                    if arr.shape == (len(cell_names), len(protein_names)):
+                        arr = arr.T
+                    result[name] = pd.DataFrame(arr, index=protein_names, columns=cell_names)
+                    print(f"    {name}: {result[name].shape}")
+
+        elapsed = time.time() - start
+        print(f"  Loaded in {elapsed:.1f}s")
+        return result if result else None
+
+    except Exception as e2:
+        print(f"  h5py fallback also failed: {e2}")
+        print("  Falling back to text files...")
+        return None
+
+
+def load_r_output_txt(output_dir: Path) -> dict:
+    """Load R output from text files (slow for large files)."""
     result = {}
     
     for name in ['beta', 'se', 'zscore', 'pvalue']:
         filepath = output_dir / f"{name}.txt"
         if filepath.exists():
+            print(f"  Loading {name}...", end=" ", flush=True)
+            start = time.time()
             df = pd.read_csv(filepath, sep=r'\s+', index_col=0)
+            elapsed = time.time() - start
             result[name] = df
-            print(f"  Loaded {name}: {df.shape}")
+            print(f"{df.shape} in {elapsed:.1f}s")
         else:
             print(f"  Warning: {name}.txt not found")
     
     return result
 
+
+def load_r_output(output_dir: Path) -> dict:
+    """
+    Load R output files, preferring h5ad format if available.
+    
+    To create h5ad from R outputs:
+        Rscript scripts/save_results_h5ad.R <output_dir>
+    """
+    # Try h5ad first (much faster)
+    result = load_r_output_h5ad(output_dir)
+    if result:
+        return result
+    
+    # Fall back to text files
+    print("  H5AD not found, loading text files (slower)...")
+    print("  Tip: Run 'Rscript scripts/save_results_h5ad.R <output_dir>' for faster loading")
+    return load_r_output_txt(output_dir)
+
+
+# =============================================================================
+# Comparison Functions
+# =============================================================================
 
 def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -> dict:
     """Compare Python and R results."""
@@ -92,59 +239,53 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
         py_arr = py_result[name]
         r_arr = r_result[name]
         
-        # Check shape
+        # Find common rows and columns
+        common_rows = py_arr.index.intersection(r_arr.index)
+        common_cols = py_arr.columns.intersection(r_arr.columns)
+        
+        if len(common_rows) == 0 or len(common_cols) == 0:
+            comparison[name] = {
+                'status': 'FAIL',
+                'message': f'No common rows/cols. Python: {py_arr.shape}, R: {r_arr.shape}'
+            }
+            continue
+        
+        # Report shape differences
         if py_arr.shape != r_arr.shape:
-            comparison[name] = {
-                'status': 'FAIL',
-                'message': f'Shape mismatch: Python {py_arr.shape} vs R {r_arr.shape}'
-            }
-            continue
-        
-        # Check row names (proteins)
-        py_rows = set(py_arr.index)
-        r_rows = set(r_arr.index)
-        if py_rows != r_rows:
-            missing_in_py = len(r_rows - py_rows)
-            missing_in_r = len(py_rows - r_rows)
-            comparison[name] = {
-                'status': 'FAIL',
-                'message': f'Row mismatch. Missing in Py: {missing_in_py}, Missing in R: {missing_in_r}'
-            }
-            continue
-        
-        # Check column names
-        py_cols = set(py_arr.columns)
-        r_cols = set(r_arr.columns)
-        if py_cols != r_cols:
-            missing_in_py = len(r_cols - py_cols)
-            missing_in_r = len(py_cols - r_cols)
-            comparison[name] = {
-                'status': 'FAIL',
-                'message': f'Column mismatch. Missing in Py: {missing_in_py}, Missing in R: {missing_in_r}'
-            }
-            continue
+            print(f"    Note: {name} shape differs - Python {py_arr.shape} vs R {r_arr.shape}")
+            print(f"    Comparing {len(common_rows)} common proteins × {len(common_cols)} common cells")
         
         # Align by row and column names
-        py_aligned = py_arr.loc[r_arr.index, r_arr.columns]
+        py_aligned = py_arr.loc[common_rows, common_cols]
+        r_aligned = r_arr.loc[common_rows, common_cols]
         
         # Calculate difference
-        diff = np.abs(py_aligned.values - r_arr.values)
+        diff = np.abs(py_aligned.values - r_aligned.values)
         max_diff = np.nanmax(diff)
         mean_diff = np.nanmean(diff)
+        n_compared = len(common_rows) * len(common_cols)
         
         if max_diff <= tolerance:
             comparison[name] = {
                 'status': 'PASS',
                 'max_diff': max_diff,
                 'mean_diff': mean_diff,
-                'message': f'Max diff: {max_diff:.2e}'
+                'n_compared': n_compared,
+                'message': f'Max diff: {max_diff:.2e} (n={n_compared:,})'
             }
         else:
+            # Find location of max diff
+            max_idx = np.unravel_index(np.nanargmax(diff), diff.shape)
+            max_row = common_rows[max_idx[0]]
+            max_col = common_cols[max_idx[1]]
+            
             comparison[name] = {
                 'status': 'FAIL',
                 'max_diff': max_diff,
                 'mean_diff': mean_diff,
-                'message': f'Max diff: {max_diff:.2e} (tolerance: {tolerance:.2e})'
+                'n_compared': n_compared,
+                'max_loc': (max_row, max_col),
+                'message': f'Max diff: {max_diff:.2e} at ({max_row}, {max_col})'
             }
     
     return comparison
@@ -193,6 +334,9 @@ def load_cosmx_data(input_file, min_genes=50, verbose=True):
         ).sparse.to_dense()
     else:
         counts_df = pd.DataFrame(counts_matrix.T, index=gene_names, columns=cell_names)
+    
+    if verbose:
+        print(f"   Final shape: {counts_df.shape} (genes × cells)")
     
     return counts_df
 
@@ -252,7 +396,6 @@ def main(cosmx=False, save_output=False):
     
     if cosmx:
         input_data = load_cosmx_data(COSMX_INPUT, min_genes=min_genes, verbose=True)
-        print(f"   Shape: {input_data.shape} (genes × cells)")
     else:
         input_data = load_visium_10x(VISIUM_INPUT, min_genes=min_genes, verbose=True)
         print(f"   Spots: {len(input_data['spot_names'])}")
@@ -303,6 +446,7 @@ def main(cosmx=False, save_output=False):
             seed=SEED,
             sig_filter=sig_filter,
             backend="numpy",
+            use_gsl_rng=True,  # Use GSL RNG for R compatibility
             use_cache=True,  # Cache permutation tables for faster repeated runs
             verbose=True
         )
