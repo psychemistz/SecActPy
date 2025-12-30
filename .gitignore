@@ -230,5 +230,6 @@ dataset/input/LIHC_CosMx_data.h5ad
 dataset/input/OV_scRNAseq_data.h5ad
 dataset/input/Visium_HCC
 dataset/input/*.rda
+dataset/input/*.rds
 dataset/input/*.h5Seurat
 dataset/output/*
