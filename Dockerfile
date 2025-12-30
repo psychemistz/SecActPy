@@ -104,68 +104,59 @@ ENV LC_ALL=en_US.UTF-8
 ARG INSTALL_R
 RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
-        echo "Installing R..." && \
+        echo "Installing R from Ubuntu repos..." && \
         echo "========================================" && \
         apt-get update && \
         apt-get install -y --no-install-recommends \
             r-base \
-            r-base-dev \
-            r-cran-rcpp \
-            r-cran-matrix \
-            r-cran-ggplot2 \
-            r-cran-dplyr \
-            r-cran-tidyr \
-            r-cran-data.table \
-            r-cran-httr \
-            r-cran-jsonlite \
-            r-cran-r6 \
-            r-cran-crayon \
-            r-cran-remotes \
-            r-bioc-biobase \
-            r-bioc-biocmanager && \
+            r-base-dev && \
         rm -rf /var/lib/apt/lists/* && \
         R -e "cat('R version:', R.version.string, '\n')"; \
     else \
         echo "Skipping R installation"; \
     fi
 
-# Install additional CRAN packages not in Ubuntu repos
+# Install CRAN packages
 ARG INSTALL_R
 RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
-        echo "Installing additional CRAN packages..." && \
+        echo "Installing CRAN packages..." && \
         echo "========================================" && \
         R -e "options(repos = c(CRAN = 'https://cloud.r-project.org/')); \
-              for (pkg in c('RcppArmadillo', 'RcppEigen', 'devtools')) { \
-                  if (!require(pkg, character.only = TRUE, quietly = TRUE)) { \
-                      cat('Installing', pkg, '...\n'); \
-                      install.packages(pkg, dependencies = TRUE) \
-                  } else { \
-                      cat(pkg, 'already installed\n') \
-                  } \
-              }"; \
+              install.packages(c( \
+                  'remotes', \
+                  'BiocManager', \
+                  'devtools', \
+                  'Matrix', \
+                  'Rcpp', \
+                  'RcppArmadillo', \
+                  'RcppEigen', \
+                  'ggplot2', \
+                  'dplyr', \
+                  'tidyr', \
+                  'data.table', \
+                  'httr', \
+                  'jsonlite', \
+                  'R6', \
+                  'crayon' \
+              ), dependencies = TRUE)"; \
     fi
 
-# Install additional Bioconductor packages
+# Install Bioconductor packages
 ARG INSTALL_R
 RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
         echo "Installing Bioconductor packages..." && \
         echo "========================================" && \
-        R -e "if (!require('BiocManager', quietly = TRUE)) install.packages('BiocManager'); \
-              BiocManager::install(ask = FALSE, update = FALSE)" && \
-        R -e "for (pkg in c('S4Vectors', 'IRanges', 'SummarizedExperiment', 'SingleCellExperiment', 'rhdf5')) { \
-              if (!require(pkg, character.only = TRUE, quietly = TRUE)) { \
-                  cat('Installing', pkg, '...\n'); \
-                  tryCatch({ \
-                      BiocManager::install(pkg, ask = FALSE, update = FALSE); \
-                      cat(pkg, 'OK\n') \
-                  }, error = function(e) { \
-                      cat(pkg, 'FAILED:', conditionMessage(e), '\n') \
-                  }) \
-              } else { \
-                  cat(pkg, 'already installed\n') \
-              } \
+        R -e "BiocManager::install(ask = FALSE, update = FALSE)" && \
+        R -e "for (pkg in c('Biobase', 'S4Vectors', 'IRanges', 'SummarizedExperiment', 'SingleCellExperiment', 'rhdf5')) { \
+              cat('Installing', pkg, '...\n'); \
+              tryCatch({ \
+                  BiocManager::install(pkg, ask = FALSE, update = FALSE); \
+                  cat(pkg, 'OK\n') \
+              }, error = function(e) { \
+                  cat(pkg, 'FAILED:', conditionMessage(e), '\n') \
+              }) \
             }"; \
     fi
 
