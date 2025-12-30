@@ -447,7 +447,6 @@ def test_scrnaseq_comparison(n_cells: int = 5000, use_gpu: bool = False):
         n_rand=N_RAND, 
         seed=SEED, 
         backend=backend,
-        use_cache=True,
         verbose=True
     )
     t_std = time.time() - t_start
@@ -467,7 +466,6 @@ def test_scrnaseq_comparison(n_cells: int = 5000, use_gpu: bool = False):
         seed=SEED,
         batch_size=batch_size,
         backend=backend,
-        use_cache=True,
         verbose=True
     )
     t_batch = time.time() - t_start
@@ -490,7 +488,6 @@ def test_scrnaseq_comparison(n_cells: int = 5000, use_gpu: bool = False):
         seed=SEED,
         use_cache=True,
         backend=backend,
-        use_cache=True,
         verbose=True
     )
     t_sparse = time.time() - t_start
@@ -581,7 +578,6 @@ def test_st_comparison(n_spots: int = 10000, use_gpu: bool = False):
         n_rand=N_RAND, 
         seed=SEED, 
         backend=backend,
-        use_cache=True,
         verbose=True
     )
     t_std = time.time() - t_start
@@ -601,7 +597,6 @@ def test_st_comparison(n_spots: int = 10000, use_gpu: bool = False):
         seed=SEED,
         batch_size=batch_size,
         backend=backend,
-        use_cache=True,
         verbose=True
     )
     t_batch = time.time() - t_start
@@ -622,8 +617,8 @@ def test_st_comparison(n_spots: int = 10000, use_gpu: bool = False):
         proj, Y_sparse, stats,
         n_rand=N_RAND,
         seed=SEED,
+        use_cache=True,
         backend=backend,
-        use_cache=True
         verbose=True
     )
     t_sparse = time.time() - t_start
@@ -753,7 +748,6 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
         n_rand=N_RAND, 
         seed=SEED, 
         backend=backend,
-        use_cache=True,
         verbose=True
     )
     t_std = time.time() - t_start
@@ -773,7 +767,6 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
         seed=SEED,
         batch_size=batch_size,
         backend=backend,
-        use_cache=True,
         verbose=True
     )
     t_batch = time.time() - t_start
@@ -794,8 +787,8 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
         proj, Y_sparse, stats,
         n_rand=N_RAND,
         seed=SEED,
-        backend=backend,
         use_cache=True,
+        backend=backend,
         verbose=True
     )
     t_sparse = time.time() - t_start
@@ -819,6 +812,45 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
     print(f"  Sparse-preserving ({backend}): {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving ({backend}): {t_sparse:.3f}s")
     
     all_pass = cmp1['pass'] and cmp2['pass']
+    
+    # =========================================================================
+    # Method 4: Streaming to h5ad (optional)
+    # =========================================================================
+    import tempfile
+    import os as os_mod
+    
+    print(f"\n4. Batch + Streaming to h5ad ({backend})...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = os_mod.path.join(tmpdir, "streaming_results.h5ad")
+        
+        t_start = time.time()
+        ridge_batch(
+            X, Y_scaled,
+            lambda_=LAMBDA,
+            n_rand=N_RAND,
+            seed=SEED,
+            batch_size=batch_size,
+            backend=backend,
+            output_path=output_path,
+            verbose=True
+        )
+        t_stream = time.time() - t_start
+        
+        # Verify streamed results
+        import h5py
+        with h5py.File(output_path, 'r') as f:
+            beta_streamed = f['beta'][:]
+            print(f"   Streamed shape: {beta_streamed.shape}")
+            print(f"   File size: {os_mod.path.getsize(output_path) / 1e6:.1f} MB")
+        
+        # Compare with non-batch results
+        max_diff = np.max(np.abs(beta_streamed - result_std['beta']))
+        stream_pass = max_diff < TOL
+        print(f"   Max diff vs standard: {max_diff:.2e} {'✓' if stream_pass else '✗'}")
+        print(f"   Total time: {t_stream:.3f}s")
+        
+        all_pass = all_pass and stream_pass
+    
     print(f"\n  {'✓ ALL TESTS PASSED' if all_pass else '✗ SOME TESTS FAILED'}")
     
     return all_pass

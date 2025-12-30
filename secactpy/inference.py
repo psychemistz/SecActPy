@@ -837,6 +837,7 @@ def secact_activity_inference(
     backend: str = "numpy",
     use_gsl_rng: bool = True,
     use_cache: bool = False,
+    sort_genes: bool = False,
     verbose: bool = True
 ) -> dict[str, pd.DataFrame]:
     """
@@ -896,6 +897,11 @@ def secact_activity_inference(
     use_cache : bool, default=False
         Cache permutation tables to disk for reuse. Enable when running
         multiple analyses with the same gene count for faster repeated runs.
+    sort_genes : bool, default=False
+        If True, sort common genes alphabetically before running ridge regression.
+        This ensures reproducible results across different platforms but may
+        differ from original gene order. Set to True for cross-platform
+        reproducibility with R.
     verbose : bool, default=True
         Print progress information.
 
@@ -1004,6 +1010,12 @@ def secact_activity_inference(
     # --- Step 5: Find overlapping genes ---
     common_genes = Y.index.intersection(X.index)
 
+    # Optionally sort genes alphabetically
+    if sort_genes:
+        common_genes = common_genes.sort_values()
+        if verbose:
+            print("  Sorted genes alphabetically")
+
     if verbose:
         print(f"  Common genes: {len(common_genes)}")
 
@@ -1096,6 +1108,7 @@ def secact_activity_inference_scrnaseq(
     backend: str = "auto",
     use_gsl_rng: bool = True,
     use_cache: bool = False,
+    sort_genes: bool = False,
     verbose: bool = False
 ) -> dict[str, Any]:
     """
@@ -1133,6 +1146,11 @@ def secact_activity_inference_scrnaseq(
     use_gsl_rng : bool, default=True
         Use GSL-compatible RNG for exact R/RidgeR reproducibility.
         Set to False for faster inference when R matching is not needed.
+    use_cache : bool, default=False
+        Cache permutation tables to disk for reuse.
+    sort_genes : bool, default=False
+        If True, sort common genes alphabetically before running ridge regression.
+        This ensures reproducible results across different platforms.
     verbose : bool, default=False
         If True, print progress messages.
 
@@ -1311,6 +1329,7 @@ def secact_activity_inference_scrnaseq(
         backend=backend,
         use_gsl_rng=use_gsl_rng,
         use_cache=use_cache,
+        sort_genes=sort_genes,
         verbose=verbose
     )
 
@@ -1501,6 +1520,7 @@ def secact_activity_inference_st(
     backend: str = "auto",
     use_gsl_rng: bool = True,
     use_cache: bool = False,
+    sort_genes: bool = False,
     verbose: bool = False
 ) -> dict[str, Any]:
     """
@@ -1550,6 +1570,9 @@ def secact_activity_inference_st(
         Set to False for faster inference when R matching is not needed.
     use_cache : bool, default=False
         Cache permutation tables to disk for reuse.
+    sort_genes : bool, default=False
+        If True, sort common genes alphabetically before running ridge regression.
+        This ensures reproducible results across different platforms.
     verbose : bool, default=False
         Print progress messages.
 
@@ -1800,6 +1823,7 @@ def secact_activity_inference_st(
         backend=backend,
         use_gsl_rng=use_gsl_rng,
         use_cache=use_cache,
+        sort_genes=sort_genes,
         verbose=verbose
     )
 
