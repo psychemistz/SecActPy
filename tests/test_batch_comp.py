@@ -814,12 +814,13 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
     all_pass = cmp1['pass'] and cmp2['pass']
     
     # =========================================================================
-    # Method 4: Streaming to h5ad (optional)
+    # Method 4: Streaming to h5ad (optional, slower due to disk I/O)
     # =========================================================================
     import tempfile
     import os as os_mod
     
     print(f"\n4. Batch + Streaming to h5ad ({backend})...")
+    print("   (Note: Streaming is slower due to disk I/O - use for memory-constrained scenarios)")
     with tempfile.TemporaryDirectory() as tmpdir:
         output_path = os_mod.path.join(tmpdir, "streaming_results.h5ad")
         
@@ -832,6 +833,7 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
             batch_size=batch_size,
             backend=backend,
             output_path=output_path,
+            output_compression='lzf',  # Faster than gzip
             verbose=True
         )
         t_stream = time.time() - t_start
@@ -845,9 +847,9 @@ def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
         
         # Compare with non-batch results
         max_diff = np.max(np.abs(beta_streamed - result_std['beta']))
-        stream_pass = max_diff < TOL
+        stream_pass = max_diff < TOLERANCE
         print(f"   Max diff vs standard: {max_diff:.2e} {'✓' if stream_pass else '✗'}")
-        print(f"   Total time: {t_stream:.3f}s")
+        print(f"   Total time: {t_stream:.3f}s (includes disk I/O)")
         
         all_pass = all_pass and stream_pass
     

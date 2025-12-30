@@ -518,6 +518,7 @@ def ridge_batch(
     backend: Literal["auto", "numpy", "cupy"] = "auto",
     use_cache: bool = False,
     output_path: Optional[str] = None,
+    output_compression: Optional[str] = "gzip",
     feature_names: Optional[list] = None,
     sample_names: Optional[list] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
@@ -549,6 +550,9 @@ def ridge_batch(
     output_path : str, optional
         If provided, stream results to this HDF5 file instead of
         returning them in memory.
+    output_compression : str, optional, default="gzip"
+        Compression for streaming output. Options: "gzip" (smaller, slower),
+        "lzf" (faster), or None (no compression, fastest).
     feature_names : list, optional
         Feature names for output file.
     sample_names : list, optional
@@ -631,12 +635,15 @@ def ridge_batch(
     if output_path is not None:
         if verbose:
             print(f"  Output: streaming to {output_path}")
+            if output_compression:
+                print(f"  Compression: {output_compression}")
         writer = StreamingResultWriter(
             output_path,
             n_features=n_features,
             n_samples=n_samples,
             feature_names=feature_names,
-            sample_names=sample_names
+            sample_names=sample_names,
+            compression=output_compression
         )
 
     # --- Compute T Matrix (once) ---
