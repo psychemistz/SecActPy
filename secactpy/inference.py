@@ -24,7 +24,7 @@ The main function `secact_activity()` handles:
 
 import time
 import warnings
-from typing import Any, Dict, Literal, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -404,7 +404,7 @@ def secact_activity(
     use_gsl_rng: bool = True,
     use_cache: bool = False,
     verbose: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Infer secreted protein activity from gene expression data.
 
@@ -819,7 +819,7 @@ def secact_activity_inference(
     use_gsl_rng: bool = True,
     use_cache: bool = False,
     verbose: bool = True,
-) -> Dict[str, pd.DataFrame]:
+) -> dict[str, pd.DataFrame]:
     """
     Secreted Protein Activity Inference (matching R's SecAct.activity.inference).
 
@@ -1075,7 +1075,7 @@ def secact_activity_inference_scrnaseq(
     use_gsl_rng: bool = True,
     use_cache: bool = False,
     verbose: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Cell State Activity Inference from Single Cell RNA-seq Data.
 
@@ -1298,7 +1298,7 @@ def secact_activity_inference_scrnaseq(
 # =============================================================================
 
 
-def load_visium_10x(visium_path: str, min_genes: int = 0, verbose: bool = False) -> Dict[str, Any]:
+def load_visium_10x(visium_path: str, min_genes: int = 0, verbose: bool = False) -> dict[str, Any]:
     """
     Load 10X Visium spatial transcriptomics data.
 
@@ -1485,7 +1485,7 @@ def secact_activity_inference_st(
     use_gsl_rng: bool = True,
     use_cache: bool = False,
     verbose: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Spot Activity Inference from Spatial Transcriptomics Data.
 
@@ -1656,7 +1656,7 @@ def secact_activity_inference_st(
             print(f"  After deduplication: {len(gene_names)} genes")
 
     n_genes = len(gene_names)
-    n_spots = len(spot_names)
+    len(spot_names)
 
     # --- Step 5: Normalize (counts per scale_factor) ---
     if sparse.issparse(counts):

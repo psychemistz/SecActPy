@@ -53,7 +53,7 @@ References:
 - RidgeR source: generate_permutation_table() in ridger.c
 """
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 
@@ -663,7 +663,7 @@ def get_derived_inverse_perm_table(
         )
 
     # Get full table (cached)
-    t0 = time.time()
+    time.time()
     full_inv_table = get_cached_inverse_perm_table(
         n_full, n_perm, seed, cache_dir=cache_dir, verbose=verbose
     )
@@ -926,7 +926,7 @@ REFERENCE_MT19937_SEED0_FIRST10 = [
 REFERENCE_MT19937_SEED5489_FIRST5 = [3499211612, 581869302, 3890346734, 3586334585, 545404204]
 
 
-def validate_mt19937() -> Tuple[bool, str]:
+def validate_mt19937() -> tuple[bool, str]:
     """
     Validate MT19937 implementation against reference values.
 
@@ -955,7 +955,7 @@ def validate_mt19937() -> Tuple[bool, str]:
     return True, "MT19937 implementation validated successfully"
 
 
-def validate_gslrng() -> Tuple[bool, str]:
+def validate_gslrng() -> tuple[bool, str]:
     """
     Validate GSLRNG implementation.
 
@@ -1008,13 +1008,13 @@ int main() {
     int n = 10;
     int n_perm = 5;
     unsigned long seed = 0;
-    
+
     gsl_rng *rng = gsl_rng_alloc(gsl_rng_mt19937);
     gsl_rng_set(rng, seed);
-    
+
     int *array = (int*)malloc(n * sizeof(int));
     for (int i = 0; i < n; i++) array[i] = i;
-    
+
     printf("REFERENCE_PERM_TABLE = np.array([\\n");
     for (int p = 0; p < n_perm; p++) {
         shuffle_array(rng, array, n);
@@ -1026,7 +1026,7 @@ int main() {
         printf("],  # perm %d\\n", p);
     }
     printf("], dtype=np.int32)\\n");
-    
+
     gsl_rng_free(rng);
     free(array);
     return 0;

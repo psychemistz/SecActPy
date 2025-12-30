@@ -27,7 +27,7 @@ Usage:
 
 import warnings
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -133,8 +133,8 @@ def _load_tsv_gz(filepath: Union[str, Path]) -> pd.DataFrame:
 
 def load_signature(
     name: str = DEFAULT_SIGNATURE,
-    features: Optional[List[str]] = None,
-    genes: Optional[List[str]] = None,
+    features: Optional[list[str]] = None,
+    genes: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     Load a bundled signature matrix.
@@ -225,7 +225,7 @@ def load_signature(
 
 
 def load_secact(
-    features: Optional[List[str]] = None, genes: Optional[List[str]] = None
+    features: Optional[list[str]] = None, genes: Optional[list[str]] = None
 ) -> pd.DataFrame:
     """
     Load the SecAct signature matrix.
@@ -248,7 +248,7 @@ def load_secact(
 
 
 def load_cytosig(
-    features: Optional[List[str]] = None, genes: Optional[List[str]] = None
+    features: Optional[list[str]] = None, genes: Optional[list[str]] = None
 ) -> pd.DataFrame:
     """
     Load the CytoSig signature matrix.
@@ -275,7 +275,7 @@ def load_cytosig(
 # =============================================================================
 
 
-def list_signatures() -> List[str]:
+def list_signatures() -> list[str]:
     """
     List available signature matrices.
 

@@ -38,7 +38,7 @@ Usage:
 import gc
 import time
 import warnings
-from typing import Any, Dict, Literal
+from typing import Any, Literal
 
 import numpy as np
 from scipy import linalg, stats
@@ -102,7 +102,7 @@ def ridge(
     use_gsl_rng: bool = True,
     use_cache: bool = False,
     verbose: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Ridge regression with permutation testing.
 
@@ -251,7 +251,7 @@ def _ridge_permutation_numpy(
     use_gsl_rng: bool,
     use_cache: bool,
     verbose: bool,
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     NumPy implementation of ridge regression with permutation testing.
 
@@ -360,14 +360,14 @@ def _ridge_permutation_numpy(
 
 def _ridge_ttest_numpy(
     X: np.ndarray, Y: np.ndarray, lambda_: float, verbose: bool
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     NumPy implementation of ridge regression with analytical t-test.
 
     Used when n_rand=0 for faster computation with parametric inference.
     """
     n_genes, n_features = X.shape
-    n_samples = Y.shape[1]
+    Y.shape[1]
 
     # --- Step 1: Compute T = (X'X + λI)^{-1} X' ---
     if verbose:
@@ -446,7 +446,7 @@ def _ridge_cupy(
     use_gsl_rng: bool,
     use_cache: bool,
     verbose: bool,
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     CuPy GPU implementation of ridge regression with permutation testing.
 
@@ -634,7 +634,7 @@ def ridge_with_precomputed_T(
     n_rand: int = DEFAULT_NRAND,
     seed: int = DEFAULT_SEED,
     use_gsl_rng: bool = True,
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     Ridge regression using precomputed projection matrix.
 

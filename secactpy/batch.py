@@ -35,7 +35,7 @@ import math
 import time
 import warnings
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Literal, Optional, Union
+from typing import Any, Callable, Literal, Optional, Union
 
 import numpy as np
 from scipy import linalg
@@ -89,7 +89,7 @@ def estimate_memory(
     n_rand: int = 1000,
     batch_size: Optional[int] = None,
     include_gpu: bool = False,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Estimate memory requirements for ridge regression.
 
@@ -146,7 +146,8 @@ def estimate_memory(
     # Beta batch: (n_features, batch_size)
     beta_batch_bytes = n_features * batch_size * bytes_per_float
 
-    to_gb = lambda x: x / (1024**3)
+    def to_gb(x):
+        return x / (1024**3)
 
     estimates = {
         "T_matrix": to_gb(T_bytes),
@@ -303,7 +304,7 @@ class StreamingResultWriter:
 
         self._samples_written = 0
 
-    def write_batch(self, result: Dict[str, np.ndarray], start_col: Optional[int] = None) -> None:
+    def write_batch(self, result: dict[str, np.ndarray], start_col: Optional[int] = None) -> None:
         """
         Write a batch of results.
 
@@ -388,7 +389,7 @@ def _compute_T_cupy(X_gpu, lambda_: float):
 
 def _process_batch_numpy(
     T: np.ndarray, Y_batch: np.ndarray, inv_perm_table: np.ndarray, n_rand: int
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     Process a single batch using NumPy with T-column permutation.
 
@@ -433,7 +434,7 @@ def _process_batch_numpy(
 
 def _process_batch_cupy(
     T_gpu, Y_batch: np.ndarray, inv_perm_table: np.ndarray, n_rand: int
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     Process a single batch using CuPy with T-column permutation.
 
@@ -511,7 +512,7 @@ def ridge_batch(
     sample_names: Optional[list] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     verbose: bool = False,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """
     Ridge regression with batch processing for large datasets.
 
@@ -932,7 +933,7 @@ def ridge_batch_sparse_preserving(
     use_cache: bool = False,
     backend: Literal["auto", "numpy", "cupy"] = "auto",
     verbose: bool = False,
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     Sparse-preserving ridge inference for a batch of samples.
 
@@ -1122,7 +1123,7 @@ def _ridge_batch_sparse_preserving_gpu(
     use_cache: bool,
     is_sparse: bool,
     verbose: bool,
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """GPU implementation of sparse-preserving ridge batch processing."""
     if cp is None:
         raise RuntimeError("CuPy not available")

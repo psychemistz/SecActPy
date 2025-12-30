@@ -28,7 +28,7 @@ Usage:
 
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -74,7 +74,7 @@ except ImportError:
 
 def load_results(
     path: Union[str, Path], load_arrays: bool = True, mmap_mode: Optional[str] = None
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Load results from HDF5 file created by ridge_batch.
 
@@ -158,10 +158,10 @@ def load_results(
 
 
 def results_to_dataframes(
-    results: Dict[str, Any],
-    feature_names: Optional[List[str]] = None,
-    sample_names: Optional[List[str]] = None,
-) -> Dict[str, pd.DataFrame]:
+    results: dict[str, Any],
+    feature_names: Optional[list[str]] = None,
+    sample_names: Optional[list[str]] = None,
+) -> dict[str, pd.DataFrame]:
     """
     Convert results arrays to labeled pandas DataFrames.
 
@@ -213,9 +213,9 @@ def results_to_dataframes(
 
 
 def results_to_anndata(
-    results: Dict[str, Any],
-    feature_names: Optional[List[str]] = None,
-    sample_names: Optional[List[str]] = None,
+    results: dict[str, Any],
+    feature_names: Optional[list[str]] = None,
+    sample_names: Optional[list[str]] = None,
     primary_layer: str = "zscore",
 ) -> "anndata.AnnData":
     """
@@ -319,10 +319,10 @@ def results_to_anndata(
 
 def save_st_results_to_h5ad(
     counts,
-    activity_results: Dict[str, Any],
+    activity_results: dict[str, Any],
     output_path: Union[str, Path],
-    gene_names: Optional[List[str]] = None,
-    cell_names: Optional[List[str]] = None,
+    gene_names: Optional[list[str]] = None,
+    cell_names: Optional[list[str]] = None,
     spatial_coords: Optional[pd.DataFrame] = None,
     metadata: Optional[pd.DataFrame] = None,
     platform: str = "unknown",
@@ -516,7 +516,7 @@ def save_st_results_to_h5ad(
 
 def add_activity_to_anndata(
     adata: "anndata.AnnData",
-    activity_results: Dict[str, Any],
+    activity_results: dict[str, Any],
     key_prefix: str = "SecAct",
     layer_name: Optional[str] = "SecAct_zscore",
     copy: bool = False,
@@ -701,12 +701,12 @@ def load_as_anndata(path: Union[str, Path], primary_layer: str = "zscore") -> "a
 
 
 def save_results(
-    results: Dict[str, Any],
+    results: dict[str, Any],
     path: Union[str, Path],
     format: str = "auto",
     compression: Optional[str] = "gzip",
-    feature_names: Optional[List[str]] = None,
-    sample_names: Optional[List[str]] = None,
+    feature_names: Optional[list[str]] = None,
+    sample_names: Optional[list[str]] = None,
 ) -> None:
     """
     Save results to file.
@@ -751,11 +751,11 @@ def save_results(
 
 
 def _save_hdf5(
-    results: Dict[str, Any],
+    results: dict[str, Any],
     path: Path,
     compression: Optional[str],
-    feature_names: Optional[List[str]],
-    sample_names: Optional[List[str]],
+    feature_names: Optional[list[str]],
+    sample_names: Optional[list[str]],
 ) -> None:
     """Save results to HDF5."""
     if not H5PY_AVAILABLE:
@@ -783,10 +783,10 @@ def _save_hdf5(
 
 
 def _save_csv(
-    results: Dict[str, Any],
+    results: dict[str, Any],
     path: Path,
-    feature_names: Optional[List[str]],
-    sample_names: Optional[List[str]],
+    feature_names: Optional[list[str]],
+    sample_names: Optional[list[str]],
 ) -> None:
     """Save results to CSV files (one per array)."""
     dfs = results_to_dataframes(results, feature_names, sample_names)
@@ -801,10 +801,10 @@ def _save_csv(
 
 
 def _save_parquet(
-    results: Dict[str, Any],
+    results: dict[str, Any],
     path: Path,
-    feature_names: Optional[List[str]],
-    sample_names: Optional[List[str]],
+    feature_names: Optional[list[str]],
+    sample_names: Optional[list[str]],
 ) -> None:
     """Save results to Parquet files."""
     try:
@@ -827,7 +827,7 @@ def _save_parquet(
 # =============================================================================
 
 
-def get_file_info(path: Union[str, Path]) -> Dict[str, Any]:
+def get_file_info(path: Union[str, Path]) -> dict[str, Any]:
     """
     Get information about an HDF5 results file without loading data.
 
@@ -874,10 +874,10 @@ def get_file_info(path: Union[str, Path]) -> Dict[str, Any]:
 
 
 def concatenate_results(
-    result_files: List[Union[str, Path]],
+    result_files: list[Union[str, Path]],
     output_path: Optional[Union[str, Path]] = None,
     axis: int = 1,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """
     Concatenate multiple result files.
 
