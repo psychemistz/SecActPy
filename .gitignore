@@ -232,4 +232,5 @@ dataset/input/Visium_HCC
 dataset/input/*.rda
 dataset/input/*.rds
 dataset/input/*.h5Seurat
+dataset/input/*
 dataset/output/*
