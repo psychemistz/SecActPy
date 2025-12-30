@@ -95,15 +95,10 @@ __version__ = "0.1.1"
 
 # Batch processing for large datasets
 from .batch import (
-    PopulationStats,
-    ProjectionComponents,
     StreamingResultWriter,
     estimate_batch_size,
     estimate_memory,
-    precompute_population_stats,
-    precompute_projection_components,
     ridge_batch,
-    ridge_batch_sparse_preserving,
 )
 
 # High-level API (most users need only these)

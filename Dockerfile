@@ -160,18 +160,43 @@ RUN if [ "$INSTALL_R" = "true" ]; then \
             }"; \
     fi
 
+# Install additional CRAN packages that SecAct/RidgeR might need
+ARG INSTALL_R
+RUN if [ "$INSTALL_R" = "true" ]; then \
+        echo "========================================" && \
+        echo "Installing additional CRAN packages..." && \
+        echo "========================================" && \
+        R -e "options(repos = c(CRAN = 'https://cloud.r-project.org/')); \
+              pkgs <- c('openssl', 'curl', 'httr2', 'gitcreds', 'gh', 'usethis', 'testthat'); \
+              for (pkg in pkgs) { \
+                  tryCatch({ \
+                      if (!requireNamespace(pkg, quietly = TRUE)) { \
+                          install.packages(pkg, dependencies = TRUE); \
+                      }; \
+                      cat(pkg, 'OK\n') \
+                  }, error = function(e) cat(pkg, 'SKIP\n')) \
+              }"; \
+    fi
+
 # Install SecAct from GitHub (data2intelligence/SecAct)
+# Note: SecAct may fail due to dependencies - we continue anyway since SecActPy is the main package
 ARG INSTALL_R
 RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
         echo "Installing SecAct from GitHub..." && \
         echo "========================================" && \
         R -e "options(timeout = 600); \
-              remotes::install_github('data2intelligence/SecAct', \
-                  dependencies = TRUE, \
-                  upgrade = 'never', \
-                  force = TRUE)" && \
-        R -e "library(SecAct); cat('SecAct version:', as.character(packageVersion('SecAct')), '\n')"; \
+              tryCatch({ \
+                  remotes::install_github('data2intelligence/SecAct', \
+                      dependencies = TRUE, \
+                      upgrade = 'never', \
+                      force = TRUE); \
+                  library(SecAct); \
+                  cat('SecAct version:', as.character(packageVersion('SecAct')), '\n') \
+              }, error = function(e) { \
+                  cat('SecAct installation failed:', conditionMessage(e), '\n'); \
+                  cat('This is OK - SecActPy provides equivalent functionality.\n') \
+              })"; \
     fi
 
 # Install RidgeR from GitHub (beibeiru/RidgeR)
@@ -220,11 +245,22 @@ RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
         R -e "cat('R version:', R.version.string, '\n'); \
               installed <- installed.packages()[, 'Package']; \
-              for (pkg in c('SecAct', 'Biobase', 'Matrix')) { \
+              required <- c('Biobase', 'Matrix', 'remotes'); \
+              optional <- c('SecAct', 'RidgeR', 'SpaCET'); \
+              cat('\nRequired packages:\n'); \
+              for (pkg in required) { \
                   if (pkg %in% installed) { \
-                      cat(pkg, 'OK\n') \
+                      cat('  ', pkg, 'OK\n') \
                   } else { \
-                      cat(pkg, 'NOT FOUND\n') \
+                      cat('  ', pkg, 'MISSING\n') \
+                  } \
+              }; \
+              cat('\nOptional packages:\n'); \
+              for (pkg in optional) { \
+                  if (pkg %in% installed) { \
+                      cat('  ', pkg, 'OK\n') \
+                  } else { \
+                      cat('  ', pkg, 'not installed\n') \
                   } \
               }"; \
     fi

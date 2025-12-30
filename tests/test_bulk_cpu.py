@@ -10,6 +10,7 @@ Reference: R output from RidgeR::SecAct.activity.inference
 Usage:
     python tests/test_bulk_cpu.py
     python tests/test_bulk_cpu.py --save
+    python tests/test_bulk_cpu.py --resample 1000  # Test with 1000 resampled samples
     python tests/test_bulk_cpu.py data.csv --gene-col 0
     python tests/test_bulk_cpu.py data.tsv --no-validate
 
@@ -45,6 +46,53 @@ LAMBDA = 5e5
 NRAND = 1000
 SEED = 0
 GROUP_COR = 0.9
+
+
+# =============================================================================
+# Resampling Function
+# =============================================================================
+
+def resample_expression(Y: pd.DataFrame, n_samples: int, seed: int = 42) -> pd.DataFrame:
+    """
+    Resample expression data to create more samples for benchmarking.
+    
+    Creates n_samples by resampling columns with replacement and adding
+    small random noise to create variation.
+    
+    Parameters
+    ----------
+    Y : pd.DataFrame
+        Expression data (genes × samples)
+    n_samples : int
+        Number of samples to generate
+    seed : int
+        Random seed for reproducibility
+        
+    Returns
+    -------
+    pd.DataFrame
+        Resampled expression data (genes × n_samples)
+    """
+    np.random.seed(seed)
+    
+    n_genes = Y.shape[0]
+    n_original = Y.shape[1]
+    
+    # Resample columns with replacement
+    sample_indices = np.random.choice(n_original, size=n_samples, replace=True)
+    
+    # Create resampled data
+    resampled = Y.iloc[:, sample_indices].copy()
+    
+    # Add small random noise to create variation (scale by data range)
+    data_std = np.std(Y.values)
+    noise = np.random.normal(0, data_std * 0.01, size=(n_genes, n_samples))
+    resampled_values = resampled.values + noise
+    
+    # Create new column names
+    new_columns = [f"Sample_{i+1}" for i in range(n_samples)]
+    
+    return pd.DataFrame(resampled_values, index=Y.index, columns=new_columns)
 
 
 # =============================================================================
@@ -126,7 +174,7 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
 # Main Test
 # =============================================================================
 
-def main(input_file=None, gene_col=None, validate=True, save_output=False):
+def main(input_file=None, gene_col=None, validate=True, save_output=False, resample=None):
     """
     Run bulk RNA-seq inference.
     
@@ -140,6 +188,8 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
         If True, compare against R reference output.
     save_output : bool, default=False
         If True, save results to HDF5 file.
+    resample : int, optional
+        If provided, resample to this many samples for benchmarking.
     """
     print("=" * 70)
     print("SecActPy Bulk RNA-seq Validation Test (CPU)")
@@ -162,6 +212,11 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
     print("\n1. Checking files...")
     print(f"   Input: {input_path}")
     
+    # Disable validation if resampling (different sample count)
+    if resample is not None:
+        validate = False
+        print(f"   Resampling: {resample} samples (validation disabled)")
+    
     if validate:
         if not OUTPUT_DIR.exists():
             print(f"   Warning: Reference output not found: {OUTPUT_DIR}")
@@ -173,8 +228,15 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
     # Load data
     print("\n2. Loading input data...")
     Y = load_expression_data(input_path, gene_col=gene_col)
-    print(f"   Expression data: {Y.shape} (genes × samples)")
-    print(f"   Samples: {list(Y.columns)}")
+    print(f"   Original expression data: {Y.shape} (genes × samples)")
+    print(f"   Original samples: {list(Y.columns)}")
+    
+    # Resample if requested
+    if resample is not None:
+        print(f"\n   Resampling to {resample} samples...")
+        Y = resample_expression(Y, n_samples=resample, seed=42)
+        print(f"   Resampled expression data: {Y.shape} (genes × samples)")
+        print(f"   Memory: {Y.values.nbytes / 1e6:.1f} MB")
     
     # Run inference
     print("\n3. Running SecActPy inference (CPU)...")
@@ -198,6 +260,10 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False):
         elapsed = time.time() - start_time
         print(f"   Completed in {elapsed:.2f} seconds")
         print(f"   Result shape: {py_result['beta'].shape}")
+        
+        # Performance stats
+        n_samples = Y.shape[1]
+        print(f"   Throughput: {n_samples / elapsed:.0f} samples/sec")
         
     except Exception as e:
         print(f"   ERROR: {e}")
@@ -287,6 +353,9 @@ Examples:
   # Run with default test file and validate against R
   python tests/test_bulk_cpu.py
   
+  # Run with resampled data (1000 samples) for benchmarking
+  python tests/test_bulk_cpu.py --resample 1000
+  
   # Run with custom CSV file
   python tests/test_bulk_cpu.py data.csv --gene-col 0
   
@@ -316,6 +385,13 @@ Examples:
         action='store_true',
         help='Save results to HDF5 file'
     )
+    parser.add_argument(
+        '--resample',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Resample to N samples for benchmarking (e.g., --resample 1000)'
+    )
     return parser.parse_args()
 
 
@@ -333,6 +409,7 @@ if __name__ == "__main__":
         input_file=args.input_file,
         gene_col=gene_col,
         validate=not args.no_validate,
-        save_output=args.save
+        save_output=args.save,
+        resample=args.resample
     )
     sys.exit(0 if success else 1)

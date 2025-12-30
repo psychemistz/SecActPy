@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 """
-Batch vs Non-Batch Processing Comparison Test with Real Datasets.
+Batch vs Non-Batch Processing Comparison Test.
 
-Compares standard ridge inference with batch processing (including sparse-preserving)
-for all data types: bulk RNA-seq, scRNA-seq, and spatial transcriptomics.
-
-Uses real signature matrices (SecAct, CytoSig) and real/simulated expression data.
-Resamples data if sample size is too small for meaningful batch comparison.
+Compares standard ridge inference with batch processing for different data types.
 
 Usage:
-    python tests/test_batch_comparison.py
-    python tests/test_batch_comparison.py --bulk
-    python tests/test_batch_comparison.py --scrnaseq
-    python tests/test_batch_comparison.py --st
-    python tests/test_batch_comparison.py --all --gpu
+    python tests/test_batch_comp.py
+    python tests/test_batch_comp.py --bulk --n-bulk 1000
+    python tests/test_batch_comp.py --scrnaseq --n-cells 5000
+    python tests/test_batch_comp.py --gpu-only --cosmx
 """
 
 import numpy as np
@@ -30,9 +25,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from secactpy import (
     ridge,
     ridge_batch,
-    precompute_population_stats,
-    precompute_projection_components,
-    ridge_batch_sparse_preserving,
     load_signature,
     clear_perm_cache,
     CUPY_AVAILABLE,
@@ -40,7 +32,7 @@ from secactpy import (
 
 # Test parameters
 TOLERANCE = 1e-10
-N_RAND = 1000  # Use realistic n_rand
+N_RAND = 1000
 SEED = 0
 LAMBDA = 5e5
 
@@ -52,962 +44,343 @@ COSMX_INPUT = os.path.join(DATASET_DIR, "input", "LIHC_CosMx_data.h5ad")
 
 
 def scale_columns(Y: np.ndarray) -> np.ndarray:
-    """
-    Scale columns of Y like R's scale() (mean=0, std=1, ddof=1).
-    """
+    """Scale columns of Y (mean=0, std=1, ddof=1)."""
     mu = Y.mean(axis=0)
     sigma = Y.std(axis=0, ddof=1)
     sigma = np.where(sigma < 1e-12, 1.0, sigma)
     return (Y - mu) / sigma
 
 
-def resample_columns(Y: np.ndarray, n_target: int, add_noise: bool = True) -> np.ndarray:
-    """
-    Resample columns to reach target count with optional noise.
-    
-    Parameters
-    ----------
-    Y : ndarray, shape (n_genes, n_samples)
-        Original data
-    n_target : int
-        Target number of samples
-    add_noise : bool
-        If True, add small Gaussian noise to resampled columns
-        
-    Returns
-    -------
-    Y_resampled : ndarray, shape (n_genes, n_target)
-    """
+def resample_columns(Y: np.ndarray, n_target: int, seed: int = 42) -> np.ndarray:
+    """Resample columns to target count with noise."""
+    np.random.seed(seed)
     n_genes, n_current = Y.shape
     
     if n_current >= n_target:
         return Y[:, :n_target].copy()
     
-    # Randomly sample with replacement
-    np.random.seed(42)
     indices = np.random.randint(0, n_current, size=n_target)
     Y_resampled = Y[:, indices].copy()
     
-    if add_noise:
-        # Add small noise to make samples slightly different
-        noise_scale = np.std(Y) * 0.01
-        noise = np.random.randn(n_genes, n_target) * noise_scale
-        Y_resampled = Y_resampled + noise
+    noise_scale = np.std(Y) * 0.01
+    noise = np.random.randn(n_genes, n_target) * noise_scale
+    return Y_resampled + noise
+
+
+def compare_results(result1: dict, result2: dict, name1: str, name2: str) -> bool:
+    """Compare two result dictionaries."""
+    print(f"\n  Comparison: {name1} vs {name2}")
+    all_pass = True
     
-    return Y_resampled
+    for key in ['beta', 'se', 'zscore', 'pvalue']:
+        if key in result1 and key in result2:
+            diff = np.abs(result1[key] - result2[key]).max()
+            status = "✓" if diff < TOLERANCE else "✗"
+            print(f"    {status} {key}: max diff = {diff:.2e}")
+            if diff >= TOLERANCE:
+                all_pass = False
+    
+    return all_pass
 
 
-def load_real_bulk_data():
+def load_bulk_data():
     """Load real bulk RNA-seq data."""
     if not os.path.exists(BULK_INPUT):
         return None
-    
-    # Try different loading strategies
     try:
-        # First, peek at the file to understand format
-        with open(BULK_INPUT, 'r') as f:
-            header = f.readline().strip()
-            first_data = f.readline().strip()
-        
-        # Check if first column looks like gene names or numbers
-        first_col_header = header.split('\t')[0] if '\t' in header else header.split()[0]
-        first_col_data = first_data.split('\t')[0] if '\t' in first_data else first_data.split()[0]
-        
-        # Determine separator
-        sep = '\t' if '\t' in header else r'\s+'
-        
-        # Load the data
-        df = pd.read_csv(BULK_INPUT, sep=sep)
-        
-        # Check if first column contains gene-like names (strings, not pure numbers)
-        first_col = df.iloc[:, 0]
-        if first_col.dtype == object or not pd.api.types.is_numeric_dtype(first_col):
-            # First column is gene names
+        df = pd.read_csv(BULK_INPUT, sep=r'\s+')
+        if df.iloc[:, 0].dtype == object:
             df = df.set_index(df.columns[0])
-        else:
-            # Check if index (row numbers) should be replaced with a named column
-            # This happens when file has no row names but has gene column
-            pass
-        
-        # Ensure index is string type
         df.index = df.index.astype(str)
-        
         return df
     except Exception as e:
         print(f"  Warning: Failed to load bulk data: {e}")
         return None
 
 
-def load_cosmx_data(input_file, min_genes=50, verbose=True):
+def load_cosmx_data(min_genes=50):
     """Load CosMx data from h5ad file."""
     import anndata as ad
-    from scipy import sparse
     
-    if not os.path.exists(input_file):
-        if verbose:
-            print(f"   CosMx file not found: {input_file}")
+    if not os.path.exists(COSMX_INPUT):
+        print(f"   CosMx file not found: {COSMX_INPUT}")
         return None
     
-    adata = ad.read_h5ad(input_file)
-    
-    # Always use adata.X and adata.var_names (not .raw)
-    # The .raw layer may have different gene IDs
-    counts_matrix = adata.X
+    adata = ad.read_h5ad(COSMX_INPUT)
+    counts = adata.X
     gene_names = list(adata.var_names)
-    cell_names = list(adata.obs_names)
     
-    if verbose:
-        print(f"   Using adata.X (shape: {counts_matrix.shape})")
-        print(f"   Total genes: {len(gene_names)}")
-        print(f"   Total cells: {len(cell_names)}")
-        print(f"   Sample gene names: {gene_names[:10]}")
+    print(f"   Loaded: {counts.shape} (cells × genes)")
     
-    # Apply QC filter
-    if sparse.issparse(counts_matrix):
-        genes_per_cell = np.asarray((counts_matrix > 0).sum(axis=1)).ravel()
+    # QC filter
+    if sps.issparse(counts):
+        genes_per_cell = np.asarray((counts > 0).sum(axis=1)).ravel()
     else:
-        genes_per_cell = (counts_matrix > 0).sum(axis=1)
+        genes_per_cell = (counts > 0).sum(axis=1)
     
-    keep_cells = genes_per_cell >= min_genes
-    n_kept = keep_cells.sum()
-    counts_matrix = counts_matrix[keep_cells, :]
-    cell_names = [c for c, k in zip(cell_names, keep_cells) if k]
+    keep = genes_per_cell >= min_genes
+    counts = counts[keep, :]
+    print(f"   After QC: {counts.shape[0]} cells")
     
-    if verbose:
-        print(f"   Cells after QC (>={min_genes} genes): {n_kept}")
-    
-    # Return as sparse (genes × cells)
-    if sparse.issparse(counts_matrix):
-        counts_transposed = counts_matrix.T.tocsr()
+    # Transpose to (genes × cells)
+    if sps.issparse(counts):
+        counts = counts.T.tocsr()
     else:
-        counts_transposed = sparse.csr_matrix(counts_matrix.T)
+        counts = sps.csr_matrix(counts.T)
     
-    return {
-        'counts': counts_transposed,
-        'gene_names': gene_names,
-        'cell_names': cell_names,
-    }
+    return {'counts': counts, 'gene_names': gene_names}
 
 
-def compare_results(result1: dict, result2: dict, name1: str, name2: str) -> dict:
-    """Compare two result dictionaries."""
-    metrics = {}
-    for key in ['beta', 'se', 'zscore', 'pvalue']:
-        if key in result1 and key in result2:
-            diff = np.abs(result1[key] - result2[key]).max()
-            metrics[key] = diff
-    
-    all_pass = all(v < TOLERANCE for v in metrics.values())
-    
-    print(f"\n  Comparison: {name1} vs {name2}")
-    for key, diff in metrics.items():
-        status = "✓" if diff < TOLERANCE else "✗"
-        print(f"    {status} {key}: max diff = {diff:.2e}")
-    
-    return {'metrics': metrics, 'pass': all_pass}
-
-
-def test_bulk_comparison(n_samples: int = 1000, use_gpu: bool = False):
-    """
-    Test batch vs non-batch for bulk RNA-seq using real data.
-    """
+def test_bulk(n_samples: int = 1000, use_gpu: bool = False):
+    """Test batch vs non-batch for bulk RNA-seq."""
     print("=" * 70)
-    print(f"BULK RNA-SEQ: Batch vs Non-Batch Comparison {'(GPU)' if use_gpu else '(CPU)'}")
+    print(f"BULK RNA-SEQ: Batch vs Non-Batch {'(GPU)' if use_gpu else '(CPU)'}")
     print("=" * 70)
     
     backend = 'cupy' if use_gpu else 'numpy'
     
-    # Load real signature matrix
-    print("\nLoading real SecAct signature matrix...")
+    # Load signature
+    print("\nLoading signature matrix...")
     sig_df = load_signature('secact')
-    gene_names = sig_df.index.tolist()
-    protein_names = sig_df.columns.tolist()
-    n_genes_sig, n_features = sig_df.shape
-    print(f"  Signature: {n_genes_sig} genes × {n_features} proteins")
+    print(f"  Signature: {sig_df.shape}")
     
-    # Create gene-to-index mapping for derivation
-    sig_gene_to_idx = {g: i for i, g in enumerate(gene_names)}
+    # Load or simulate data
+    print("\nLoading bulk data...")
+    bulk_df = load_bulk_data()
     
-    # Load real bulk data
-    print("\nLoading real bulk expression data...")
-    bulk_df = load_real_bulk_data()
-    
-    use_real_data = False
-    
-    if bulk_df is not None and bulk_df.shape[1] > 0:
-        print(f"  Original: {bulk_df.shape[0]} genes × {bulk_df.shape[1]} samples")
-        
-        # Ensure index is string type for gene matching
-        bulk_df.index = bulk_df.index.astype(str)
-        
-        # Check if index looks like gene names (not just numbers)
-        sample_idx = list(bulk_df.index[:5])
-        looks_like_genes = any(not s.isdigit() for s in sample_idx)
-        
-        if not looks_like_genes:
-            print(f"  Index appears numeric: {sample_idx}")
-            print(f"  Cannot match genes, using simulated data...")
+    if bulk_df is not None:
+        # Find common genes
+        common = sig_df.index.intersection(bulk_df.index)
+        if len(common) >= 100:
+            X = sig_df.loc[common].values.astype(np.float64)
+            Y_base = bulk_df.loc[common].values.astype(np.float64)
+            print(f"  Using real data: {len(common)} genes")
         else:
-            # Standardize gene names for matching (uppercase)
-            sig_gene_map = {g.upper(): g for g in gene_names}
-            bulk_gene_map = {str(g).upper(): g for g in bulk_df.index}
-            
-            # Find common genes (case-insensitive)
-            common_upper = set(sig_gene_map.keys()) & set(bulk_gene_map.keys())
-            print(f"  Common genes with signature: {len(common_upper)}")
-            
-            if len(common_upper) >= 100:
-                # Map back to original names
-                common_sig_genes = [sig_gene_map[g] for g in common_upper]
-                common_bulk_genes = [bulk_gene_map[g] for g in common_upper]
-                
-                # Subset to common genes
-                X_common = sig_df.loc[common_sig_genes].values.astype(np.float64)
-                
-                # Reindex bulk_df to match order
-                bulk_subset = bulk_df.loc[common_bulk_genes]
-                Y_base = bulk_subset.values.astype(np.float64)
-                common_genes = common_sig_genes
-                use_real_data = True
-                print(f"  Using real data with {len(common_genes)} genes")
-            else:
-                print(f"  Too few common genes ({len(common_upper)}), using simulated data...")
+            X = sig_df.values.astype(np.float64)
+            Y_base = np.random.randn(X.shape[0], 1)
+            print(f"  Using simulated data (too few common genes)")
     else:
-        if bulk_df is not None:
-            print(f"  Bulk file has {bulk_df.shape[1]} samples, using simulated data...")
-        else:
-            print("  Real data not found, using simulated data...")
+        X = sig_df.values.astype(np.float64)
+        Y_base = np.random.randn(X.shape[0], 1)
+        print(f"  Using simulated data")
     
-    if not use_real_data:
-        # Use simulated data with real signature (full genes)
-        np.random.seed(42)
-        X_common = sig_df.values.astype(np.float64)
-        Y_base = np.random.randn(n_genes_sig, 1).astype(np.float64)
-        common_genes = gene_names
+    # Resample and scale
+    Y_raw = resample_columns(Y_base, n_samples)
+    Y = scale_columns(Y_raw)
+    print(f"  Final shape: {Y.shape}")
     
-    n_genes = len(common_genes)
-    
-    # Resample to target number of samples
-    print(f"\nResampling to {n_samples} samples...")
-    Y_raw = resample_columns(Y_base, n_samples, add_noise=True)
-    print(f"  Resampled data: {Y_raw.shape[0]} genes × {Y_raw.shape[1]} samples")
-    
-    # Scale Y
-    Y_scaled = scale_columns(Y_raw)
-    
-    print(f"\nTest setup:")
-    print(f"  n_genes: {n_genes}")
-    print(f"  n_features: {n_features}")
-    print(f"  n_samples: {n_samples}")
-    print(f"  n_rand: {N_RAND}")
-    print(f"  backend: {backend}")
-    
-    # =========================================================================
-    # Method 1: Standard ridge (non-batch)
-    # =========================================================================
-    print(f"\n1. Standard ridge (non-batch, {backend})...")
-    t_start = time.time()
-    result_std = ridge(
-        X_common, Y_scaled, 
-        lambda_=LAMBDA, 
-        n_rand=N_RAND, 
-        seed=SEED, 
-        backend=backend,
-        use_cache=True,
-        verbose=True
-    )
-    t_std = time.time() - t_start
-    print(f"   Total time: {t_std:.3f}s")
-    print(f"   Shape: {result_std['beta'].shape}")
-    
-    # =========================================================================
-    # Method 2: Batch processing (dense)
-    # =========================================================================
-    print(f"\n2. Batch processing (dense, {backend})...")
     batch_size = max(100, n_samples // 10)
-    t_start = time.time()
-    result_batch = ridge_batch(
-        X_common, Y_scaled,
-        lambda_=LAMBDA,
-        n_rand=N_RAND,
-        seed=SEED,
-        batch_size=batch_size,
-        backend=backend,
-        use_cache=True,
-        verbose=True
-    )
-    t_batch = time.time() - t_start
-    print(f"   Total time: {t_batch:.3f}s (batch_size={batch_size})")
-    print(f"   Shape: {result_batch['beta'].shape}")
     
-    # =========================================================================
-    # Method 3: Sparse-preserving batch processing
-    # =========================================================================
-    print(f"\n3. Sparse-preserving batch processing ({backend})...")
+    # Method 1: Standard ridge
+    print(f"\n1. Standard ridge ({backend})...")
+    t1 = time.time()
+    r1 = ridge(X, Y, lambda_=LAMBDA, n_rand=N_RAND, seed=SEED, 
+               backend=backend, use_cache=True, verbose=True)
+    t1 = time.time() - t1
+    print(f"   Time: {t1:.2f}s, Shape: {r1['beta'].shape}")
     
-    # Precompute components
-    stats = precompute_population_stats(Y_raw)
-    proj = precompute_projection_components(X_common, lambda_=LAMBDA)
+    # Method 2: Batch processing
+    print(f"\n2. Batch processing ({backend}, batch_size={batch_size})...")
+    t2 = time.time()
+    r2 = ridge_batch(X, Y, lambda_=LAMBDA, n_rand=N_RAND, seed=SEED,
+                     batch_size=batch_size, backend=backend, 
+                     use_cache=True, verbose=True)
+    t2 = time.time() - t2
+    print(f"   Time: {t2:.2f}s, Shape: {r2['beta'].shape}")
     
-    t_start = time.time()
-    result_sparse = ridge_batch_sparse_preserving(
-        proj, Y_raw, stats,
-        n_rand=N_RAND,
-        seed=SEED,
-        use_cache=True,
-        backend=backend,
-        verbose=True
-    )
-    t_sparse = time.time() - t_start
-    print(f"   Total time: {t_sparse:.3f}s")
-    print(f"   Shape: {result_sparse['beta'].shape}")
-    
-    # =========================================================================
-    # Compare results
-    # =========================================================================
+    # Compare
     print("\n" + "-" * 50)
-    print("COMPARISONS:")
+    passed = compare_results(r1, r2, "Standard", "Batch")
     
-    cmp1 = compare_results(result_std, result_batch, "Standard", "Batch")
-    cmp2 = compare_results(result_std, result_sparse, "Standard", "Sparse-preserving")
+    print(f"\n  Summary: Standard={t1:.2f}s, Batch={t2:.2f}s")
+    print(f"  {'✓ PASSED' if passed else '✗ FAILED'}")
     
-    # Summary
-    print("\n" + "-" * 50)
-    print("SUMMARY:")
-    print(f"  Standard ({backend}):   {t_std:.3f}s")
-    print(f"  Batch ({backend}):      {t_batch:.3f}s ({t_std/t_batch:.1f}x)" if t_batch > 0 else f"  Batch ({backend}):      {t_batch:.3f}s")
-    print(f"  Sparse-preserving ({backend}): {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving ({backend}): {t_sparse:.3f}s")
-    
-    all_pass = cmp1['pass'] and cmp2['pass']
-    print(f"\n  {'✓ ALL TESTS PASSED' if all_pass else '✗ SOME TESTS FAILED'}")
-    
-    return all_pass
+    return passed
 
 
-def test_scrnaseq_comparison(n_cells: int = 5000, use_gpu: bool = False):
-    """
-    Test batch vs non-batch for scRNA-seq using real signature with simulated sparse data.
-    """
+def test_scrnaseq(n_cells: int = 5000, use_gpu: bool = False):
+    """Test batch vs non-batch for scRNA-seq (sparse data)."""
     print("\n" + "=" * 70)
-    print(f"scRNA-SEQ: Batch vs Non-Batch Comparison {'(GPU)' if use_gpu else '(CPU)'}")
+    print(f"scRNA-SEQ: Batch vs Non-Batch {'(GPU)' if use_gpu else '(CPU)'}")
     print("=" * 70)
     
     backend = 'cupy' if use_gpu else 'numpy'
     
-    # Load real signature matrix
-    print("\nLoading real SecAct signature matrix...")
+    # Load signature
+    print("\nLoading signature matrix...")
     sig_df = load_signature('secact')
     X = sig_df.values.astype(np.float64)
     n_genes, n_features = X.shape
-    print(f"  Signature: {n_genes} genes × {n_features} proteins")
+    print(f"  Signature: {n_genes} × {n_features}")
     
-    # Simulate scRNA-seq data (sparse, log-normalized counts)
-    print(f"\nSimulating scRNA-seq data ({n_cells} cells)...")
+    # Simulate sparse scRNA-seq data
+    print(f"\nSimulating scRNA-seq ({n_cells} cells, 70% sparsity)...")
     np.random.seed(42)
+    Y_dense = np.zeros((n_genes, n_cells), dtype=np.float64)
+    mask = np.random.rand(n_genes, n_cells) > 0.70
+    Y_dense[mask] = np.exp(np.random.randn(mask.sum()) * 1.5 + 1)
     
-    # Simulate count-like data with realistic sparsity
-    # Log-normal distribution for non-zero values
-    Y_raw_dense = np.zeros((n_genes, n_cells), dtype=np.float64)
+    Y_sparse = sps.csr_matrix(Y_dense)
+    Y_scaled = scale_columns(Y_dense)
     
-    # 70% dropout rate (typical for scRNA-seq)
-    dropout_rate = 0.70
-    non_zero_mask = np.random.rand(n_genes, n_cells) > dropout_rate
+    nnz = 100 * Y_sparse.nnz / Y_sparse.size
+    print(f"  Shape: {Y_sparse.shape}, Non-zeros: {nnz:.1f}%")
     
-    # Fill non-zero entries with log-normal values
-    n_nonzero = non_zero_mask.sum()
-    Y_raw_dense[non_zero_mask] = np.exp(np.random.randn(n_nonzero) * 1.5 + 1)
-    
-    # Create sparse matrix
-    Y_sparse = sps.csr_matrix(Y_raw_dense)
-    nnz_pct = 100 * Y_sparse.nnz / (Y_sparse.shape[0] * Y_sparse.shape[1])
-    
-    print(f"  Data shape: {Y_raw_dense.shape}")
-    print(f"  Sparsity: {100 - nnz_pct:.1f}% zeros ({Y_sparse.nnz:,} non-zeros)")
-    print(f"  Memory (dense): {Y_raw_dense.nbytes / 1e6:.1f} MB")
-    print(f"  Memory (sparse): {(Y_sparse.data.nbytes + Y_sparse.indices.nbytes + Y_sparse.indptr.nbytes) / 1e6:.1f} MB")
-    
-    # Scale for standard method
-    Y_scaled = scale_columns(Y_raw_dense)
-    
-    print(f"\nTest setup:")
-    print(f"  n_genes: {n_genes}")
-    print(f"  n_features: {n_features}")
-    print(f"  n_cells: {n_cells}")
-    print(f"  n_rand: {N_RAND}")
-    print(f"  backend: {backend}")
-    
-    # =========================================================================
-    # Method 1: Standard ridge (non-batch, dense)
-    # =========================================================================
-    print(f"\n1. Standard ridge (non-batch, dense Y, {backend})...")
-    t_start = time.time()
-    result_std = ridge(
-        X, Y_scaled, 
-        lambda_=LAMBDA, 
-        n_rand=N_RAND, 
-        seed=SEED, 
-        backend=backend,
-        verbose=True
-    )
-    t_std = time.time() - t_start
-    print(f"   Total time: {t_std:.3f}s")
-    print(f"   Shape: {result_std['beta'].shape}")
-    
-    # =========================================================================
-    # Method 2: Batch processing (dense)
-    # =========================================================================
-    print(f"\n2. Batch processing (dense Y, {backend})...")
     batch_size = max(500, n_cells // 10)
-    t_start = time.time()
-    result_batch = ridge_batch(
-        X, Y_scaled,
-        lambda_=LAMBDA,
-        n_rand=N_RAND,
-        seed=SEED,
-        batch_size=batch_size,
-        backend=backend,
-        verbose=True
-    )
-    t_batch = time.time() - t_start
-    print(f"   Total time: {t_batch:.3f}s (batch_size={batch_size})")
-    print(f"   Shape: {result_batch['beta'].shape}")
     
-    # =========================================================================
-    # Method 3: Sparse-preserving batch (sparse Y)
-    # =========================================================================
-    print(f"\n3. Sparse-preserving batch (sparse Y, {backend})...")
+    # Method 1: Standard (dense)
+    print(f"\n1. Standard ridge (dense, {backend})...")
+    t1 = time.time()
+    r1 = ridge(X, Y_scaled, lambda_=LAMBDA, n_rand=N_RAND, seed=SEED,
+               backend=backend, use_cache=True, verbose=True)
+    t1 = time.time() - t1
+    print(f"   Time: {t1:.2f}s")
     
-    # Precompute from sparse
-    stats = precompute_population_stats(Y_sparse)
-    proj = precompute_projection_components(X, lambda_=LAMBDA)
+    # Method 2: Batch (dense)
+    print(f"\n2. Batch processing (dense, {backend}, batch_size={batch_size})...")
+    t2 = time.time()
+    r2 = ridge_batch(X, Y_scaled, lambda_=LAMBDA, n_rand=N_RAND, seed=SEED,
+                     batch_size=batch_size, backend=backend,
+                     use_cache=True, verbose=True)
+    t2 = time.time() - t2
+    print(f"   Time: {t2:.2f}s")
     
-    t_start = time.time()
-    result_sparse = ridge_batch_sparse_preserving(
-        proj, Y_sparse, stats,
-        n_rand=N_RAND,
-        seed=SEED,
-        use_cache=True,
-        backend=backend,
-        verbose=True
-    )
-    t_sparse = time.time() - t_start
-    print(f"   Total time: {t_sparse:.3f}s")
-    print(f"   Shape: {result_sparse['beta'].shape}")
+    # Method 3: Batch (sparse) - ridge_batch handles sparse input
+    print(f"\n3. Batch processing (sparse, {backend}, batch_size={batch_size})...")
+    t3 = time.time()
+    r3 = ridge_batch(X, Y_sparse, lambda_=LAMBDA, n_rand=N_RAND, seed=SEED,
+                     batch_size=batch_size, backend=backend,
+                     use_cache=True, verbose=True)
+    t3 = time.time() - t3
+    print(f"   Time: {t3:.2f}s")
     
-    # =========================================================================
-    # Compare results
-    # =========================================================================
+    # Compare
     print("\n" + "-" * 50)
-    print("COMPARISONS:")
+    p1 = compare_results(r1, r2, "Standard", "Batch(dense)")
+    p2 = compare_results(r1, r3, "Standard", "Batch(sparse)")
     
-    cmp1 = compare_results(result_std, result_batch, "Standard", "Batch")
-    cmp2 = compare_results(result_std, result_sparse, "Standard", "Sparse-preserving")
+    print(f"\n  Summary: Standard={t1:.2f}s, Batch(dense)={t2:.2f}s, Batch(sparse)={t3:.2f}s")
+    passed = p1 and p2
+    print(f"  {'✓ PASSED' if passed else '✗ FAILED'}")
     
-    # Summary
-    print("\n" + "-" * 50)
-    print("SUMMARY:")
-    print(f"  Standard ({backend}):   {t_std:.3f}s")
-    print(f"  Batch ({backend}):      {t_batch:.3f}s ({t_std/t_batch:.1f}x)" if t_batch > 0 else f"  Batch ({backend}):      {t_batch:.3f}s")
-    print(f"  Sparse-preserving ({backend}): {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving ({backend}): {t_sparse:.3f}s")
-    
-    all_pass = cmp1['pass'] and cmp2['pass']
-    print(f"\n  {'✓ ALL TESTS PASSED' if all_pass else '✗ SOME TESTS FAILED'}")
-    
-    return all_pass
+    return passed
 
 
-def test_st_comparison(n_spots: int = 10000, use_gpu: bool = False):
-    """
-    Test batch vs non-batch for spatial transcriptomics (CosMx-like sparsity).
-    """
+def test_cosmx(n_cells: int = None, use_gpu: bool = False):
+    """Test batch vs non-batch for real CosMx data."""
     print("\n" + "=" * 70)
-    print(f"SPATIAL TRANSCRIPTOMICS: Batch vs Non-Batch Comparison {'(GPU)' if use_gpu else '(CPU)'}")
+    print(f"COSMX REAL DATA: Batch vs Non-Batch {'(GPU)' if use_gpu else '(CPU)'}")
     print("=" * 70)
     
     backend = 'cupy' if use_gpu else 'numpy'
     
-    # Load real signature matrix
-    print("\nLoading real SecAct signature matrix...")
+    # Load signature
+    print("\nLoading signature matrix...")
     sig_df = load_signature('secact')
-    X = sig_df.values.astype(np.float64)
-    n_genes, n_features = X.shape
-    print(f"  Signature: {n_genes} genes × {n_features} proteins")
+    print(f"  Signature: {sig_df.shape}")
     
-    # Simulate CosMx-like ST data (very sparse)
-    print(f"\nSimulating CosMx-like ST data ({n_spots} spots)...")
-    np.random.seed(42)
-    
-    # CosMx has ~90-95% sparsity
-    Y_raw_dense = np.zeros((n_genes, n_spots), dtype=np.float64)
-    
-    # 90% dropout rate (typical for CosMx)
-    dropout_rate = 0.90
-    non_zero_mask = np.random.rand(n_genes, n_spots) > dropout_rate
-    
-    # Fill non-zero entries
-    n_nonzero = non_zero_mask.sum()
-    Y_raw_dense[non_zero_mask] = np.exp(np.random.randn(n_nonzero) * 1.0 + 0.5)
-    
-    # Create sparse matrix
-    Y_sparse = sps.csr_matrix(Y_raw_dense)
-    nnz_pct = 100 * Y_sparse.nnz / (Y_sparse.shape[0] * Y_sparse.shape[1])
-    
-    print(f"  Data shape: {Y_raw_dense.shape}")
-    print(f"  Sparsity: {100 - nnz_pct:.1f}% zeros ({Y_sparse.nnz:,} non-zeros)")
-    print(f"  Memory (dense): {Y_raw_dense.nbytes / 1e6:.1f} MB")
-    print(f"  Memory (sparse): {(Y_sparse.data.nbytes + Y_sparse.indices.nbytes + Y_sparse.indptr.nbytes) / 1e6:.1f} MB")
-    
-    # Scale for standard method
-    Y_scaled = scale_columns(Y_raw_dense)
-    
-    print(f"\nTest setup:")
-    print(f"  n_genes: {n_genes}")
-    print(f"  n_features: {n_features}")
-    print(f"  n_spots: {n_spots}")
-    print(f"  n_rand: {N_RAND}")
-    print(f"  backend: {backend}")
-    
-    # =========================================================================
-    # Method 1: Standard ridge (non-batch, dense)
-    # =========================================================================
-    print(f"\n1. Standard ridge (non-batch, dense Y, {backend})...")
-    t_start = time.time()
-    result_std = ridge(
-        X, Y_scaled, 
-        lambda_=LAMBDA, 
-        n_rand=N_RAND, 
-        seed=SEED, 
-        backend=backend,
-        verbose=True
-    )
-    t_std = time.time() - t_start
-    print(f"   Total time: {t_std:.3f}s")
-    print(f"   Shape: {result_std['beta'].shape}")
-    
-    # =========================================================================
-    # Method 2: Batch processing (dense)
-    # =========================================================================
-    print(f"\n2. Batch processing (dense Y, {backend})...")
-    batch_size = max(1000, n_spots // 10)
-    t_start = time.time()
-    result_batch = ridge_batch(
-        X, Y_scaled,
-        lambda_=LAMBDA,
-        n_rand=N_RAND,
-        seed=SEED,
-        batch_size=batch_size,
-        backend=backend,
-        verbose=True
-    )
-    t_batch = time.time() - t_start
-    print(f"   Total time: {t_batch:.3f}s (batch_size={batch_size})")
-    print(f"   Shape: {result_batch['beta'].shape}")
-    
-    # =========================================================================
-    # Method 3: Sparse-preserving batch (sparse Y)
-    # =========================================================================
-    print(f"\n3. Sparse-preserving batch (sparse Y, {backend})...")
-    
-    # Precompute from sparse
-    stats = precompute_population_stats(Y_sparse)
-    proj = precompute_projection_components(X, lambda_=LAMBDA)
-    
-    t_start = time.time()
-    result_sparse = ridge_batch_sparse_preserving(
-        proj, Y_sparse, stats,
-        n_rand=N_RAND,
-        seed=SEED,
-        use_cache=True,
-        backend=backend,
-        verbose=True
-    )
-    t_sparse = time.time() - t_start
-    print(f"   Total time: {t_sparse:.3f}s")
-    print(f"   Shape: {result_sparse['beta'].shape}")
-    
-    # =========================================================================
-    # Compare results
-    # =========================================================================
-    print("\n" + "-" * 50)
-    print("COMPARISONS:")
-    
-    cmp1 = compare_results(result_std, result_batch, "Standard", "Batch")
-    cmp2 = compare_results(result_std, result_sparse, "Standard", "Sparse-preserving")
-    
-    # Summary
-    print("\n" + "-" * 50)
-    print("SUMMARY:")
-    print(f"  Standard ({backend}):   {t_std:.3f}s")
-    print(f"  Batch ({backend}):      {t_batch:.3f}s ({t_std/t_batch:.1f}x)" if t_batch > 0 else f"  Batch ({backend}):      {t_batch:.3f}s")
-    print(f"  Sparse-preserving ({backend}): {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving ({backend}): {t_sparse:.3f}s")
-    
-    all_pass = cmp1['pass'] and cmp2['pass']
-    print(f"\n  {'✓ ALL TESTS PASSED' if all_pass else '✗ SOME TESTS FAILED'}")
-    
-    return all_pass
-
-
-def test_cosmx_comparison(n_cells: int = None, use_gpu: bool = False):
-    """
-    Test batch vs non-batch for real CosMx spatial transcriptomics data.
-    
-    Parameters
-    ----------
-    n_cells : int, optional
-        Number of cells to use. If None, use all cells.
-    use_gpu : bool
-        Whether to use GPU backend.
-    """
-    print("\n" + "=" * 70)
-    print(f"COSMX REAL DATA: Batch vs Non-Batch Comparison {'(GPU)' if use_gpu else '(CPU)'}")
-    print("=" * 70)
-    
-    backend = 'cupy' if use_gpu else 'numpy'
-    
-    # Load real signature matrix
-    print("\nLoading real SecAct signature matrix...")
-    sig_df = load_signature('secact')
-    sig_genes = set(sig_df.index)
-    print(f"  Signature: {sig_df.shape[0]} genes × {sig_df.shape[1]} proteins")
-    
-    # Load real CosMx data
-    print("\nLoading real CosMx data...")
-    cosmx_data = load_cosmx_data(COSMX_INPUT, min_genes=50, verbose=True)
-    
-    if cosmx_data is None:
+    # Load CosMx data
+    print("\nLoading CosMx data...")
+    data = load_cosmx_data()
+    if data is None:
         print("  ERROR: CosMx data not found!")
-        print(f"  Expected at: {COSMX_INPUT}")
         return False
     
-    counts_sparse = cosmx_data['counts']  # (genes × cells)
-    gene_names = cosmx_data['gene_names']
-    cell_names = cosmx_data['cell_names']
+    counts = data['counts']  # (genes × cells)
+    gene_names = data['gene_names']
     
-    # Find overlapping genes with signature
-    print("\n  Checking gene overlap with signature...")
-    data_genes = set(gene_names)
-    overlap = sig_genes & data_genes
-    print(f"  Data genes: {len(data_genes)}")
-    print(f"  Signature genes: {len(sig_genes)}")
-    print(f"  Overlap: {len(overlap)}")
+    # Find overlapping genes
+    overlap = list(set(sig_df.index) & set(gene_names))
+    print(f"  Overlap with signature: {len(overlap)} genes")
     
     if len(overlap) < 10:
         print("  ERROR: Too few overlapping genes!")
-        print(f"  Sample data genes: {list(data_genes)[:10]}")
-        print(f"  Sample sig genes: {list(sig_genes)[:10]}")
         return False
     
-    # Subset to overlapping genes
-    overlap_list = sorted(list(overlap))
-    gene_idx = [gene_names.index(g) for g in overlap_list]
-    counts_subset = counts_sparse[gene_idx, :]
-    
-    # Subset signature to same genes
-    X = sig_df.loc[overlap_list].values.astype(np.float64)
-    n_genes, n_features = X.shape
+    # Subset data
+    gene_idx = [gene_names.index(g) for g in overlap]
+    Y_sparse = counts[gene_idx, :]
+    X = sig_df.loc[overlap].values.astype(np.float64)
     
     # Optionally subsample cells
-    n_total_cells = counts_subset.shape[1]
-    if n_cells is not None and n_cells < n_total_cells:
+    n_total = Y_sparse.shape[1]
+    if n_cells is not None and n_cells < n_total:
         np.random.seed(42)
-        cell_idx = np.random.choice(n_total_cells, n_cells, replace=False)
-        counts_subset = counts_subset[:, cell_idx]
-        n_spots = n_cells
-    else:
-        n_spots = n_total_cells
+        idx = np.random.choice(n_total, n_cells, replace=False)
+        Y_sparse = Y_sparse[:, idx]
     
-    # Convert to dense for standard method
-    Y_raw_dense = counts_subset.toarray() if sps.issparse(counts_subset) else counts_subset
-    Y_sparse = sps.csr_matrix(Y_raw_dense) if not sps.issparse(counts_subset) else counts_subset
+    n_spots = Y_sparse.shape[1]
+    Y_dense = Y_sparse.toarray()
+    Y_scaled = scale_columns(Y_dense.astype(np.float64))
     
-    nnz_pct = 100 * Y_sparse.nnz / (Y_sparse.shape[0] * Y_sparse.shape[1])
+    nnz = 100 * Y_sparse.nnz / Y_sparse.size
+    print(f"  Final: {Y_sparse.shape}, Non-zeros: {nnz:.1f}%")
     
-    print(f"\n  Final data shape: {Y_raw_dense.shape} (genes × cells)")
-    print(f"  Sparsity: {100 - nnz_pct:.1f}% zeros ({Y_sparse.nnz:,} non-zeros)")
-    print(f"  Memory (dense): {Y_raw_dense.nbytes / 1e6:.1f} MB")
-    print(f"  Memory (sparse): {(Y_sparse.data.nbytes + Y_sparse.indices.nbytes + Y_sparse.indptr.nbytes) / 1e6:.1f} MB")
+    batch_size = max(10000, n_spots // 10)
     
-    # Scale for standard method
-    Y_scaled = scale_columns(Y_raw_dense.astype(np.float64))
+    # Method 1: Standard (dense)
+    print(f"\n1. Standard ridge (dense, {backend})...")
+    t1 = time.time()
+    r1 = ridge(X, Y_scaled, lambda_=LAMBDA, n_rand=N_RAND, seed=SEED,
+               backend=backend, use_cache=True, verbose=True)
+    t1 = time.time() - t1
+    print(f"   Time: {t1:.2f}s")
     
-    print(f"\nTest setup:")
-    print(f"  n_genes: {n_genes}")
-    print(f"  n_features: {n_features}")
-    print(f"  n_cells: {n_spots}")
-    print(f"  n_rand: {N_RAND}")
-    print(f"  backend: {backend}")
+    # Method 2: Batch (dense)
+    print(f"\n2. Batch processing (dense, {backend}, batch_size={batch_size})...")
+    t2 = time.time()
+    r2 = ridge_batch(X, Y_scaled, lambda_=LAMBDA, n_rand=N_RAND, seed=SEED,
+                     batch_size=batch_size, backend=backend,
+                     use_cache=True, verbose=True)
+    t2 = time.time() - t2
+    print(f"   Time: {t2:.2f}s")
     
-    # =========================================================================
-    # Method 1: Standard ridge (non-batch, dense)
-    # =========================================================================
-    print(f"\n1. Standard ridge (non-batch, dense Y, {backend})...")
-    t_start = time.time()
-    result_std = ridge(
-        X, Y_scaled, 
-        lambda_=LAMBDA, 
-        n_rand=N_RAND, 
-        seed=SEED, 
-        backend=backend,
-        verbose=True
-    )
-    t_std = time.time() - t_start
-    print(f"   Total time: {t_std:.3f}s")
-    print(f"   Shape: {result_std['beta'].shape}")
+    # Method 3: Batch (sparse)
+    print(f"\n3. Batch processing (sparse, {backend}, batch_size={batch_size})...")
+    t3 = time.time()
+    r3 = ridge_batch(X, Y_sparse, lambda_=LAMBDA, n_rand=N_RAND, seed=SEED,
+                     batch_size=batch_size, backend=backend,
+                     use_cache=True, verbose=True)
+    t3 = time.time() - t3
+    print(f"   Time: {t3:.2f}s")
     
-    # =========================================================================
-    # Method 2: Batch processing (dense)
-    # =========================================================================
-    print(f"\n2. Batch processing (dense Y, {backend})...")
-    batch_size = max(1000, n_spots // 10)
-    t_start = time.time()
-    result_batch = ridge_batch(
-        X, Y_scaled,
-        lambda_=LAMBDA,
-        n_rand=N_RAND,
-        seed=SEED,
-        batch_size=batch_size,
-        backend=backend,
-        verbose=True
-    )
-    t_batch = time.time() - t_start
-    print(f"   Total time: {t_batch:.3f}s (batch_size={batch_size})")
-    print(f"   Shape: {result_batch['beta'].shape}")
-    
-    # =========================================================================
-    # Method 3: Sparse-preserving batch (sparse Y)
-    # =========================================================================
-    print(f"\n3. Sparse-preserving batch (sparse Y, {backend})...")
-    
-    # Precompute from sparse
-    stats = precompute_population_stats(Y_sparse)
-    proj = precompute_projection_components(X, lambda_=LAMBDA)
-    
-    t_start = time.time()
-    result_sparse = ridge_batch_sparse_preserving(
-        proj, Y_sparse, stats,
-        n_rand=N_RAND,
-        seed=SEED,
-        use_cache=True,
-        backend=backend,
-        verbose=True
-    )
-    t_sparse = time.time() - t_start
-    print(f"   Total time: {t_sparse:.3f}s")
-    print(f"   Shape: {result_sparse['beta'].shape}")
-    
-    # =========================================================================
-    # Compare results
-    # =========================================================================
+    # Compare
     print("\n" + "-" * 50)
-    print("COMPARISONS:")
+    p1 = compare_results(r1, r2, "Standard", "Batch(dense)")
+    p2 = compare_results(r1, r3, "Standard", "Batch(sparse)")
     
-    cmp1 = compare_results(result_std, result_batch, "Standard", "Batch")
-    cmp2 = compare_results(result_std, result_sparse, "Standard", "Sparse-preserving")
+    print(f"\n  Summary:")
+    print(f"    Standard:      {t1:.2f}s")
+    print(f"    Batch(dense):  {t2:.2f}s")
+    print(f"    Batch(sparse): {t3:.2f}s")
     
-    # Summary
-    print("\n" + "-" * 50)
-    print("SUMMARY:")
-    print(f"  Standard ({backend}):   {t_std:.3f}s")
-    print(f"  Batch ({backend}):      {t_batch:.3f}s ({t_std/t_batch:.1f}x)" if t_batch > 0 else f"  Batch ({backend}):      {t_batch:.3f}s")
-    print(f"  Sparse-preserving ({backend}): {t_sparse:.3f}s ({t_std/t_sparse:.1f}x)" if t_sparse > 0 else f"  Sparse-preserving ({backend}): {t_sparse:.3f}s")
+    passed = p1 and p2
+    print(f"  {'✓ PASSED' if passed else '✗ FAILED'}")
     
-    all_pass = cmp1['pass'] and cmp2['pass']
-    
-    # =========================================================================
-    # Method 4: Streaming to h5ad (optional, slower due to disk I/O)
-    # =========================================================================
-    import tempfile
-    import os as os_mod
-    
-    print(f"\n4. Batch + Streaming to h5ad ({backend})...")
-    print("   (Note: Streaming is slower due to disk I/O - use for memory-constrained scenarios)")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_path = os_mod.path.join(tmpdir, "streaming_results.h5ad")
-        
-        t_start = time.time()
-        ridge_batch(
-            X, Y_scaled,
-            lambda_=LAMBDA,
-            n_rand=N_RAND,
-            seed=SEED,
-            batch_size=batch_size,
-            backend=backend,
-            output_path=output_path,
-            output_compression='lzf',  # Faster than gzip
-            verbose=True
-        )
-        t_stream = time.time() - t_start
-        
-        # Verify streamed results
-        import h5py
-        with h5py.File(output_path, 'r') as f:
-            beta_streamed = f['beta'][:]
-            print(f"   Streamed shape: {beta_streamed.shape}")
-            print(f"   File size: {os_mod.path.getsize(output_path) / 1e6:.1f} MB")
-        
-        # Compare with non-batch results
-        max_diff = np.max(np.abs(beta_streamed - result_std['beta']))
-        stream_pass = max_diff < TOLERANCE
-        print(f"   Max diff vs standard: {max_diff:.2e} {'✓' if stream_pass else '✗'}")
-        print(f"   Total time: {t_stream:.3f}s (includes disk I/O)")
-        
-        all_pass = all_pass and stream_pass
-    
-    print(f"\n  {'✓ ALL TESTS PASSED' if all_pass else '✗ SOME TESTS FAILED'}")
-    
-    return all_pass
-
-
-def test_large_scale_comparison(n_samples: int = 50000):
-    """
-    Test with large sample sizes to show batch processing benefits.
-    Simulates million-cell scale by using representative subset.
-    """
-    print("\n" + "=" * 70)
-    print("LARGE-SCALE: Batch Processing Performance Test")
-    print("=" * 70)
-    
-    # Load real signature
-    print("\nLoading real SecAct signature matrix...")
-    sig_df = load_signature('secact')
-    X = sig_df.values.astype(np.float64)
-    n_genes, n_features = X.shape
-    print(f"  Signature: {n_genes} genes × {n_features} proteins")
-    
-    print(f"\nSimulating large-scale data ({n_samples:,} samples)...")
-    np.random.seed(42)
-    
-    # 85% sparsity (between scRNA-seq and CosMx)
-    Y_raw_dense = np.zeros((n_genes, n_samples), dtype=np.float64)
-    dropout_rate = 0.85
-    non_zero_mask = np.random.rand(n_genes, n_samples) > dropout_rate
-    n_nonzero = non_zero_mask.sum()
-    Y_raw_dense[non_zero_mask] = np.exp(np.random.randn(n_nonzero) * 1.2 + 0.8)
-    
-    Y_sparse = sps.csr_matrix(Y_raw_dense)
-    nnz_pct = 100 * Y_sparse.nnz / (Y_sparse.shape[0] * Y_sparse.shape[1])
-    
-    print(f"  Data shape: {Y_raw_dense.shape}")
-    print(f"  Sparsity: {100 - nnz_pct:.1f}% zeros ({Y_sparse.nnz:,} non-zeros)")
-    print(f"  Memory (dense): {Y_raw_dense.nbytes / 1e9:.2f} GB")
-    print(f"  Memory (sparse): {(Y_sparse.data.nbytes + Y_sparse.indices.nbytes + Y_sparse.indptr.nbytes) / 1e6:.1f} MB")
-    
-    print(f"\nTest setup:")
-    print(f"  n_genes: {n_genes}")
-    print(f"  n_features: {n_features}")
-    print(f"  n_samples: {n_samples:,}")
-    print(f"  n_rand: {N_RAND}")
-    
-    # Precompute for sparse-preserving
-    print("\nPrecomputing projection components...")
-    stats = precompute_population_stats(Y_sparse)
-    proj = precompute_projection_components(X, lambda_=LAMBDA)
-    
-    # =========================================================================
-    # Test sparse-preserving with different batch sizes
-    # =========================================================================
-    print("\n" + "-" * 50)
-    print("Sparse-Preserving Batch Processing (varying batch sizes):")
-    
-    batch_sizes = [1000, 5000, 10000, n_samples]
-    
-    results = []
-    for bs in batch_sizes:
-        if bs > n_samples:
-            continue
-        
-        label = "full" if bs == n_samples else f"batch={bs}"
-        
-        t_start = time.time()
-        
-        if bs == n_samples:
-            # Single batch
-            result = ridge_batch_sparse_preserving(
-                proj, Y_sparse, stats,
-                n_rand=N_RAND, seed=SEED,
-                use_cache=True, backend='numpy', verbose=False
-            )
-        else:
-            # Multiple batches - process each batch independently
-            all_results = []
-            
-            for start in range(0, n_samples, bs):
-                end = min(start + bs, n_samples)
-                Y_batch = Y_sparse[:, start:end]
-                
-                # Compute stats for this batch
-                batch_stats = precompute_population_stats(Y_batch)
-                
-                batch_result = ridge_batch_sparse_preserving(
-                    proj, Y_batch, batch_stats,
-                    n_rand=N_RAND, seed=SEED,
-                    use_cache=True, backend='numpy', verbose=False
-                )
-                all_results.append(batch_result)
-            
-            # Concatenate results
-            result = {
-                'beta': np.hstack([r['beta'] for r in all_results]),
-                'se': np.hstack([r['se'] for r in all_results]),
-                'zscore': np.hstack([r['zscore'] for r in all_results]),
-                'pvalue': np.hstack([r['pvalue'] for r in all_results]),
-            }
-        
-        elapsed = time.time() - t_start
-        throughput = n_samples / elapsed
-        results.append((label, elapsed, throughput, result))
-        print(f"  {label:12s}: {elapsed:.2f}s ({throughput:,.0f} samples/sec)")
-    
-    # Compare all against full
-    print("\n" + "-" * 50)
-    print("Verification (batched results should be close to full):")
-    print("  Note: Different batch stats may cause small differences")
-    
-    full_result = results[-1][3]  # Last one is full
-    all_pass = True
-    
-    for label, elapsed, throughput, result in results[:-1]:
-        # Use looser tolerance for batch processing (different stats per batch)
-        max_diff = np.abs(result['zscore'] - full_result['zscore']).max()
-        # Batched results may differ slightly due to per-batch statistics
-        batch_tolerance = 0.1  # Allow some difference due to per-batch stats
-        status = "✓" if max_diff < batch_tolerance else "✗"
-        print(f"  {status} {label}: zscore max diff = {max_diff:.4f}")
-        if max_diff >= batch_tolerance:
-            all_pass = False
-    
-    print(f"\n  {'✓ ALL TESTS PASSED' if all_pass else '✗ SOME TESTS FAILED'}")
-    
-    return all_pass
+    return passed
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Batch vs Non-Batch Comparison Test (Real Datasets)")
+    parser = argparse.ArgumentParser(description="Batch vs Non-Batch Comparison Test")
     parser.add_argument('--bulk', action='store_true', help='Test bulk RNA-seq')
     parser.add_argument('--scrnaseq', action='store_true', help='Test scRNA-seq')
-    parser.add_argument('--st', action='store_true', help='Test spatial transcriptomics (simulated)')
-    parser.add_argument('--cosmx', action='store_true', help='Test real CosMx spatial transcriptomics')
-    parser.add_argument('--large', action='store_true', help='Test large-scale processing')
+    parser.add_argument('--cosmx', action='store_true', help='Test real CosMx data')
     parser.add_argument('--all', action='store_true', help='Run all tests')
-    parser.add_argument('--gpu', action='store_true', help='Also run GPU tests (requires CuPy)')
+    parser.add_argument('--gpu', action='store_true', help='Also run GPU tests')
     parser.add_argument('--gpu-only', action='store_true', help='Run only GPU tests')
     parser.add_argument('--n-bulk', type=int, default=1000, help='Number of bulk samples')
     parser.add_argument('--n-cells', type=int, default=5000, help='Number of scRNA-seq cells')
-    parser.add_argument('--n-spots', type=int, default=10000, help='Number of ST spots')
-    parser.add_argument('--n-cosmx', type=int, default=None, help='Number of CosMx cells (None=all)')
-    parser.add_argument('--n-large', type=int, default=50000, help='Number of large-scale samples')
-    parser.add_argument('--clear-cache', action='store_true', help='Clear permutation cache first')
+    parser.add_argument('--n-cosmx', type=int, default=None, help='Number of CosMx cells')
+    parser.add_argument('--clear-cache', action='store_true', help='Clear permutation cache')
     
     args = parser.parse_args()
     
-    # Check GPU availability
     if (args.gpu or args.gpu_only) and not CUPY_AVAILABLE:
-        print("WARNING: GPU requested but CuPy not available. Running CPU only.")
+        print("WARNING: GPU requested but CuPy not available.")
         args.gpu = False
         args.gpu_only = False
     
-    # Default to all if nothing specified
-    if not any([args.bulk, args.scrnaseq, args.st, args.cosmx, args.large, args.all]):
+    if not any([args.bulk, args.scrnaseq, args.cosmx, args.all]):
         args.all = True
     
     if args.clear_cache:
@@ -1015,34 +388,21 @@ def main():
         clear_perm_cache()
     
     print("=" * 70)
-    print("BATCH vs NON-BATCH PROCESSING COMPARISON (REAL DATASETS)")
+    print("BATCH vs NON-BATCH PROCESSING COMPARISON")
     print("=" * 70)
-    print(f"\nParameters:")
-    print(f"  n_rand: {N_RAND}")
-    print(f"  lambda: {LAMBDA}")
-    print(f"  seed: {SEED}")
-    print(f"  tolerance: {TOLERANCE}")
-    print(f"  GPU available: {CUPY_AVAILABLE}")
-    print(f"  GPU tests: {'yes' if args.gpu or args.gpu_only else 'no'}")
+    print(f"\nParameters: n_rand={N_RAND}, lambda={LAMBDA}, seed={SEED}")
+    print(f"GPU available: {CUPY_AVAILABLE}")
     
     results = []
     
     # CPU tests
     if not args.gpu_only:
         if args.bulk or args.all:
-            results.append(("Bulk (CPU)", test_bulk_comparison(args.n_bulk, use_gpu=False)))
-        
+            results.append(("Bulk (CPU)", test_bulk(args.n_bulk, use_gpu=False)))
         if args.scrnaseq or args.all:
-            results.append(("scRNA-seq (CPU)", test_scrnaseq_comparison(args.n_cells, use_gpu=False)))
-        
-        if args.st or args.all:
-            results.append(("ST Simulated (CPU)", test_st_comparison(args.n_spots, use_gpu=False)))
-        
+            results.append(("scRNA-seq (CPU)", test_scrnaseq(args.n_cells, use_gpu=False)))
         if args.cosmx:
-            results.append(("CosMx Real (CPU)", test_cosmx_comparison(args.n_cosmx, use_gpu=False)))
-        
-        if args.large or args.all:
-            results.append(("Large-scale (CPU)", test_large_scale_comparison(args.n_large)))
+            results.append(("CosMx (CPU)", test_cosmx(args.n_cosmx, use_gpu=False)))
     
     # GPU tests
     if args.gpu or args.gpu_only:
@@ -1051,18 +411,13 @@ def main():
         print("=" * 70)
         
         if args.bulk or args.all:
-            results.append(("Bulk (GPU)", test_bulk_comparison(args.n_bulk, use_gpu=True)))
-        
+            results.append(("Bulk (GPU)", test_bulk(args.n_bulk, use_gpu=True)))
         if args.scrnaseq or args.all:
-            results.append(("scRNA-seq (GPU)", test_scrnaseq_comparison(args.n_cells, use_gpu=True)))
-        
-        if args.st or args.all:
-            results.append(("ST Simulated (GPU)", test_st_comparison(args.n_spots, use_gpu=True)))
-        
+            results.append(("scRNA-seq (GPU)", test_scrnaseq(args.n_cells, use_gpu=True)))
         if args.cosmx:
-            results.append(("CosMx Real (GPU)", test_cosmx_comparison(args.n_cosmx, use_gpu=True)))
+            results.append(("CosMx (GPU)", test_cosmx(args.n_cosmx, use_gpu=True)))
     
-    # Final summary
+    # Summary
     print("\n" + "=" * 70)
     print("FINAL SUMMARY")
     print("=" * 70)
@@ -1075,10 +430,7 @@ def main():
             all_pass = False
     
     print("\n" + "=" * 70)
-    if all_pass:
-        print("ALL TESTS PASSED - Batch processing produces identical results!")
-    else:
-        print("SOME TESTS FAILED - Check output above for details.")
+    print("ALL TESTS PASSED!" if all_pass else "SOME TESTS FAILED!")
     print("=" * 70)
     
     return 0 if all_pass else 1

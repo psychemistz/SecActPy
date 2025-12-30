@@ -11,6 +11,8 @@ Requirements:
 Usage:
     python tests/test_bulk_gpu.py
     python tests/test_bulk_gpu.py --save
+    python tests/test_bulk_gpu.py --resample 1000      # Test with 1000 resampled samples
+    python tests/test_bulk_gpu.py --resample 1000 --gpu-only  # Skip CPU, benchmark GPU only
 
 Expected output:
     GPU and CPU results should match within numerical tolerance.
@@ -44,6 +46,53 @@ LAMBDA = 5e5
 NRAND = 1000
 SEED = 0
 GROUP_COR = 0.9
+
+
+# =============================================================================
+# Resampling Function
+# =============================================================================
+
+def resample_expression(Y: pd.DataFrame, n_samples: int, seed: int = 42) -> pd.DataFrame:
+    """
+    Resample expression data to create more samples for benchmarking.
+    
+    Creates n_samples by resampling columns with replacement and adding
+    small random noise to create variation.
+    
+    Parameters
+    ----------
+    Y : pd.DataFrame
+        Expression data (genes × samples)
+    n_samples : int
+        Number of samples to generate
+    seed : int
+        Random seed for reproducibility
+        
+    Returns
+    -------
+    pd.DataFrame
+        Resampled expression data (genes × n_samples)
+    """
+    np.random.seed(seed)
+    
+    n_genes = Y.shape[0]
+    n_original = Y.shape[1]
+    
+    # Resample columns with replacement
+    sample_indices = np.random.choice(n_original, size=n_samples, replace=True)
+    
+    # Create resampled data
+    resampled = Y.iloc[:, sample_indices].copy()
+    
+    # Add small random noise to create variation (scale by data range)
+    data_std = np.std(Y.values)
+    noise = np.random.normal(0, data_std * 0.01, size=(n_genes, n_samples))
+    resampled_values = resampled.values + noise
+    
+    # Create new column names
+    new_columns = [f"Sample_{i+1}" for i in range(n_samples)]
+    
+    return pd.DataFrame(resampled_values, index=Y.index, columns=new_columns)
 
 
 # =============================================================================
@@ -100,7 +149,7 @@ def compare_results(cpu_result: dict, gpu_result: dict, tolerance: float = 1e-8)
 # Main Test
 # =============================================================================
 
-def main(save_output=False):
+def main(save_output=False, resample=None, gpu_only=False):
     """
     Run GPU vs CPU comparison for bulk RNA-seq.
     
@@ -108,6 +157,10 @@ def main(save_output=False):
     ----------
     save_output : bool, default=False
         If True, save results to files.
+    resample : int, optional
+        If provided, resample to this many samples for benchmarking.
+    gpu_only : bool, default=False
+        If True, skip CPU test (for benchmarking GPU only).
     """
     print("=" * 70)
     print("SecActPy GPU vs CPU Comparison: Bulk RNA-seq")
@@ -138,35 +191,56 @@ def main(save_output=False):
         return False
     print(f"   Input: {INPUT_FILE}")
     
+    if resample is not None:
+        print(f"   Resampling: {resample} samples")
+    
+    if gpu_only:
+        print(f"   Mode: GPU-only benchmark (skipping CPU)")
+    
     # Load data
     print("\n3. Loading input data...")
     Y = load_expression_data(INPUT_FILE)
-    print(f"   Expression data: {Y.shape} (genes × samples)")
+    print(f"   Original expression data: {Y.shape} (genes × samples)")
     
-    # Run CPU inference
-    print("\n4. Running CPU inference...")
-    cpu_start = time.time()
+    # Resample if requested
+    if resample is not None:
+        print(f"\n   Resampling to {resample} samples...")
+        Y = resample_expression(Y, n_samples=resample, seed=42)
+        print(f"   Resampled expression data: {Y.shape} (genes × samples)")
+        print(f"   Memory: {Y.values.nbytes / 1e6:.1f} MB")
     
-    cpu_result = secact_activity_inference(
-        input_profile=Y,
-        is_differential=True,
-        sig_matrix="secact",
-        is_group_sig=True,
-        is_group_cor=GROUP_COR,
-        lambda_=LAMBDA,
-        n_rand=NRAND,
-        seed=SEED,
-        backend="numpy",  # CPU
-        use_cache=True,
-        verbose=False
-    )
+    cpu_result = None
+    cpu_time = None
     
-    cpu_time = time.time() - cpu_start
-    print(f"   CPU time: {cpu_time:.2f} seconds")
-    print(f"   Result shape: {cpu_result['beta'].shape}")
+    # Run CPU inference (unless gpu_only)
+    if not gpu_only:
+        print("\n4. Running CPU inference...")
+        cpu_start = time.time()
+        
+        cpu_result = secact_activity_inference(
+            input_profile=Y,
+            is_differential=True,
+            sig_matrix="secact",
+            is_group_sig=True,
+            is_group_cor=GROUP_COR,
+            lambda_=LAMBDA,
+            n_rand=NRAND,
+            seed=SEED,
+            backend="numpy",  # CPU
+            use_cache=True,
+            verbose=False
+        )
+        
+        cpu_time = time.time() - cpu_start
+        print(f"   CPU time: {cpu_time:.2f} seconds")
+        print(f"   Result shape: {cpu_result['beta'].shape}")
+        step_num = 5
+    else:
+        print("\n4. Skipping CPU inference (--gpu-only)")
+        step_num = 5
     
     # Run GPU inference
-    print("\n5. Running GPU inference...")
+    print(f"\n{step_num}. Running GPU inference...")
     gpu_start = time.time()
     
     gpu_result = secact_activity_inference(
@@ -180,52 +254,65 @@ def main(save_output=False):
         seed=SEED,
         backend="cupy",  # GPU
         use_cache=True,
-        verbose=False
+        verbose=True
     )
     
     gpu_time = time.time() - gpu_start
     print(f"   GPU time: {gpu_time:.2f} seconds")
     print(f"   Result shape: {gpu_result['beta'].shape}")
     
-    # Compare results
-    print("\n6. Comparing CPU vs GPU results...")
-    comparison = compare_results(cpu_result, gpu_result)
-    
-    print("\n" + "=" * 70)
-    print("RESULTS")
-    print("=" * 70)
-    
     all_passed = True
-    for name, result in comparison.items():
-        status = result['status']
-        message = result['message']
+    
+    # Compare results (if CPU was run)
+    if cpu_result is not None:
+        step_num += 1
+        print(f"\n{step_num}. Comparing CPU vs GPU results...")
+        comparison = compare_results(cpu_result, gpu_result)
         
-        if status == 'PASS':
-            print(f"  {name:8s}: ✓ PASS - {message}")
-        else:
-            print(f"  {name:8s}: ✗ {status} - {message}")
-            all_passed = False
+        print("\n" + "=" * 70)
+        print("RESULTS")
+        print("=" * 70)
+        
+        for name, result in comparison.items():
+            status = result['status']
+            message = result['message']
+            
+            if status == 'PASS':
+                print(f"  {name:8s}: ✓ PASS - {message}")
+            else:
+                print(f"  {name:8s}: ✗ {status} - {message}")
+                all_passed = False
     
     print("\n" + "-" * 70)
     print("PERFORMANCE")
     print("-" * 70)
-    print(f"  CPU time: {cpu_time:.2f} seconds")
+    n_samples = Y.shape[1]
+    if cpu_time is not None:
+        print(f"  CPU time: {cpu_time:.2f} seconds")
+        print(f"  CPU throughput: {n_samples / cpu_time:.0f} samples/sec")
     print(f"  GPU time: {gpu_time:.2f} seconds")
-    speedup = cpu_time / gpu_time if gpu_time > 0 else float('inf')
-    print(f"  Speedup:  {speedup:.2f}x")
+    print(f"  GPU throughput: {n_samples / gpu_time:.0f} samples/sec")
+    if cpu_time is not None:
+        speedup = cpu_time / gpu_time if gpu_time > 0 else float('inf')
+        print(f"  Speedup:  {speedup:.2f}x")
+    print(f"  Samples:  {n_samples}")
     
     print("\n" + "=" * 70)
-    if all_passed:
-        print("ALL TESTS PASSED! ✓")
-        print("GPU produces identical results to CPU.")
+    if cpu_result is not None:
+        if all_passed:
+            print("ALL TESTS PASSED! ✓")
+            print("GPU produces identical results to CPU.")
+        else:
+            print("SOME TESTS FAILED! ✗")
+            print("GPU results differ from CPU.")
     else:
-        print("SOME TESTS FAILED! ✗")
-        print("GPU results differ from CPU.")
+        print("GPU BENCHMARK COMPLETE ✓")
     print("=" * 70)
     
     # Save results
     if save_output:
-        print("\n7. Saving results...")
+        step_num += 1
+        print(f"\n{step_num}. Saving results...")
         try:
             from secactpy.io import save_results
             
@@ -250,17 +337,48 @@ def main(save_output=False):
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="SecActPy GPU vs CPU Comparison: Bulk RNA-seq"
+        description="SecActPy GPU vs CPU Comparison: Bulk RNA-seq",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run with default test file (compare CPU vs GPU)
+  python tests/test_bulk_gpu.py
+  
+  # Run with resampled data (1000 samples)
+  python tests/test_bulk_gpu.py --resample 1000
+  
+  # Benchmark GPU only (skip CPU comparison)
+  python tests/test_bulk_gpu.py --resample 10000 --gpu-only
+  
+  # Save results to HDF5
+  python tests/test_bulk_gpu.py --save
+        """
     )
     parser.add_argument(
         '--save',
         action='store_true',
         help='Save GPU results to HDF5 file'
     )
+    parser.add_argument(
+        '--resample',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Resample to N samples for benchmarking (e.g., --resample 1000)'
+    )
+    parser.add_argument(
+        '--gpu-only',
+        action='store_true',
+        help='Skip CPU comparison (benchmark GPU only)'
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    success = main(save_output=args.save)
+    success = main(
+        save_output=args.save,
+        resample=args.resample,
+        gpu_only=args.gpu_only
+    )
     sys.exit(0 if success else 1)
