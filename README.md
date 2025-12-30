@@ -14,7 +14,7 @@ SecActPy is a Python package for inferring secreted protein (e.g. cytokine/chemo
 - 🔬 **Built-in Signatures**: Includes SecAct and CytoSig signature matrices
 - 🧬 **Multi-Platform Support**: Bulk RNA-seq, scRNA-seq, and Spatial Transcriptomics (Visium, CosMx)
 - 💾 **Smart Caching**: Optional permutation table caching for faster repeated analyses
-- 🧮 **Sparse-Preserving**: Memory-efficient processing for sparse single-cell data
+- 🧮 **Sparse-Aware**: Automatic memory-efficient processing for sparse single-cell data
 
 ## Installation
 
@@ -128,30 +128,35 @@ result_sc = secact_activity_inference_scrnaseq(
 ### Large-Scale Batch Processing
 
 ```python
-from secactpy import (
-    ridge_batch,
-    precompute_population_stats,
-    precompute_projection_components,
-    ridge_batch_sparse_preserving
-)
+from secactpy import ridge_batch
 
-# Standard batch processing
+# Dense data (pre-scaled)
+Y_scaled = (Y - Y.mean(axis=0)) / Y.std(axis=0, ddof=1)
 result = ridge_batch(
-    X, Y,
+    X, Y_scaled,
     batch_size=5000,
     n_rand=1000,
     backend='cupy',  # Use GPU
     verbose=True
 )
 
-# Sparse-preserving for million-cell datasets
-stats = precompute_population_stats(Y_sparse)
-proj = precompute_projection_components(X, lambda_=5e5)
-
-result = ridge_batch_sparse_preserving(
-    proj, Y_sparse, stats,
+# Sparse data (auto-scaled internally)
+import scipy.sparse as sp
+Y_sparse = sp.csr_matrix(counts)  # Raw counts
+result = ridge_batch(
+    X, Y_sparse,
+    batch_size=10000,
     n_rand=1000,
-    use_cache=True,
+    backend='auto',
+    verbose=True
+)
+
+# Stream results to disk for very large datasets
+ridge_batch(
+    X, Y,
+    batch_size=10000,
+    output_path="results.h5ad",
+    output_compression="gzip",
     verbose=True
 )
 ```
@@ -166,6 +171,15 @@ result = ridge_batch_sparse_preserving(
 | `secact_activity_inference_st()` | Spatial transcriptomics inference |
 | `secact_activity_inference_scrnaseq()` | scRNA-seq inference |
 | `load_signature(name='secact')` | Load built-in signature matrix |
+
+### Core Functions
+
+| Function | Description |
+|----------|-------------|
+| `ridge()` | Single-call ridge regression with permutation testing |
+| `ridge_batch()` | Batch processing for large datasets (dense or sparse) |
+| `estimate_batch_size()` | Estimate optimal batch size for available memory |
+| `estimate_memory()` | Estimate memory requirements |
 
 ### Key Parameters
 
@@ -186,6 +200,14 @@ result = ridge_batch_sparse_preserving(
 | `is_spot_level` | `True` | If False, aggregate by cell type |
 | `scale_factor` | `1e5` | Normalization scale factor |
 
+### Batch Processing Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `batch_size` | `5000` | Samples per batch |
+| `output_path` | `None` | Stream results to H5AD file |
+| `output_compression` | `"gzip"` | Compression: "gzip", "lzf", or None |
+
 ## GPU Acceleration
 
 ```python
@@ -202,12 +224,21 @@ result = secact_activity_inference(expression, backend='cupy')
 
 ### Performance
 
-| Dataset | CPU | GPU | Speedup |
-|---------|-----|-----|---------|
-| Bulk (1k samples) | 1.5s | 0.3s | 5x |
-| scRNA-seq (5k cells) | 6.4s | 1.2s | 5.3x |
-| ST (10k spots) | 13.9s | 2.5s | 5.6x |
-| CosMx (100k cells) | 120s | 18s | 6.7x |
+| Dataset | R (Mac M1) | R (Linux) | Py (CPU) | Py (GPU) | Speedup |
+|---------|------------|-----------|----------|----------|---------|
+| Bulk (1,170 sp × 1,000 samples) | 74.4s | 141.6s | 128.8s | 6.7s | 11–19x |
+| scRNA-seq (1,170 sp × 788 cells) | 54.9s | 117.4s | 104.8s | 6.8s | 8–15x |
+| Visium (1,170 sp × 3,404 spots) | 141.7s | 379.8s | 381.4s | 11.2s | 13–34x |
+| CosMx (151 sp × 443,515 cells) | 936.9s | 976.1s | 1226.7s | 99.9s | 9–12x |
+
+<details>
+<summary>Benchmark Environment</summary>
+
+- **Mac CPU**: M1 Pro with VECLIB (8 cores)
+- **Linux CPU**: AMD EPYC 7543P (4 cores)
+- **Linux GPU**: NVIDIA A100-SXM4-80GB
+
+</details>
 
 ## Reproducibility
 
@@ -258,12 +289,13 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Changelog
 
-### v0.1.1
-- Added `use_cache` parameter to all inference functions (default: `False`)
-- Added cell type resolution for spatial transcriptomics (`cell_type_col`, `is_spot_level`)
-- Simplified installation (base includes all common dependencies)
-
-### v0.1.0
-- Initial release with bulk, scRNA-seq, and ST support
-- GPU acceleration, batch processing, sparse-preserving mode
+### v0.1.2 (Initial Release)
+- Ridge regression with permutation-based significance testing
+- GPU acceleration via CuPy backend (9–34x speedup)
+- Batch processing with streaming H5AD output for million-sample datasets
+- Automatic sparse matrix handling in `ridge_batch()`
+- Built-in SecAct and CytoSig signature matrices
 - GSL-compatible RNG for R/RidgeR reproducibility
+- Support for Bulk RNA-seq, scRNA-seq, and Spatial Transcriptomics
+- Cell type resolution for ST data (`cell_type_col`, `is_spot_level`)
+- Optional permutation table caching (`use_cache`)
