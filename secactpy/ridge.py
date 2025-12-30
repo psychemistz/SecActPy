@@ -35,21 +35,23 @@ Usage:
     >>> result = ridge(X, Y, lambda_=5e5, n_rand=1000, backend='cupy')
 """
 
-import gc
+import numpy as np
+from scipy import linalg
+from scipy import stats
+from typing import Optional, Literal, Any, Union
 import time
 import warnings
-from typing import Any, Literal
-
-import numpy as np
-from scipy import linalg, stats
+import gc
 
 from .rng import (
     GSLRNG,
+    generate_permutation_table,
+    generate_inverse_permutation_table,
     generate_inverse_permutation_table_fast,
     get_cached_inverse_perm_table,
 )
 
-__all__ = ["ridge", "CUPY_AVAILABLE"]
+__all__ = ['ridge', 'CUPY_AVAILABLE']
 
 
 # =============================================================================
@@ -62,7 +64,6 @@ cp = None
 
 try:
     import cupy as cp
-
     # Test GPU availability
     _ = cp.array([1.0])
     cp.cuda.Device().synchronize()
@@ -91,7 +92,6 @@ DEFAULT_SEED = 0
 # Main Ridge Function
 # =============================================================================
 
-
 def ridge(
     X: np.ndarray,
     Y: np.ndarray,
@@ -101,7 +101,7 @@ def ridge(
     backend: Literal["auto", "numpy", "cupy"] = "auto",
     use_gsl_rng: bool = True,
     use_cache: bool = False,
-    verbose: bool = False,
+    verbose: bool = False
 ) -> dict[str, Any]:
     """
     Ridge regression with permutation testing.
@@ -188,7 +188,8 @@ def ridge(
         raise ValueError(f"Y must be 2D, got {Y.ndim}D")
     if X.shape[0] != Y.shape[0]:
         raise ValueError(
-            f"X and Y must have same number of rows (genes): X has {X.shape[0]}, Y has {Y.shape[0]}"
+            f"X and Y must have same number of rows (genes): "
+            f"X has {X.shape[0]}, Y has {Y.shape[0]}"
         )
     if lambda_ < 0:
         raise ValueError(f"lambda_ must be >= 0, got {lambda_}")
@@ -223,13 +224,11 @@ def ridge(
         if n_rand == 0:
             result = _ridge_ttest_numpy(X, Y, lambda_, verbose)
         else:
-            result = _ridge_permutation_numpy(
-                X, Y, lambda_, n_rand, seed, use_gsl_rng, use_cache, verbose
-            )
+            result = _ridge_permutation_numpy(X, Y, lambda_, n_rand, seed, use_gsl_rng, use_cache, verbose)
 
     # --- Add Metadata ---
-    result["method"] = backend
-    result["time"] = time.time() - start_time
+    result['method'] = backend
+    result['time'] = time.time() - start_time
 
     if verbose:
         print(f"  completed in {result['time']:.3f}s")
@@ -241,7 +240,6 @@ def ridge(
 # NumPy Backend - Permutation Test
 # =============================================================================
 
-
 def _ridge_permutation_numpy(
     X: np.ndarray,
     Y: np.ndarray,
@@ -250,7 +248,7 @@ def _ridge_permutation_numpy(
     seed: int,
     use_gsl_rng: bool,
     use_cache: bool,
-    verbose: bool,
+    verbose: bool
 ) -> dict[str, np.ndarray]:
     """
     NumPy implementation of ridge regression with permutation testing.
@@ -305,7 +303,7 @@ def _ridge_permutation_numpy(
     else:
         # Fast NumPy RNG (~70x faster, no caching needed)
         if verbose:
-            print("  Generating permutation table (fast NumPy RNG)...")
+            print(f"  Generating permutation table (fast NumPy RNG)...")
         inv_perm_table = generate_inverse_permutation_table_fast(n_genes, n_rand, seed)
 
     # Accumulators
@@ -330,7 +328,7 @@ def _ridge_permutation_numpy(
         # Accumulate statistics
         pvalue_counts += (np.abs(beta_perm) >= abs_beta).astype(np.float64)
         aver += beta_perm
-        aver_sq += beta_perm**2
+        aver_sq += beta_perm ** 2
 
     # --- Step 4: Finalize statistics (matching RidgeR exactly) ---
     if verbose:
@@ -338,7 +336,7 @@ def _ridge_permutation_numpy(
 
     # Mean and variance of permutation distribution
     mean = aver / n_rand
-    var = (aver_sq / n_rand) - (mean**2)
+    var = (aver_sq / n_rand) - (mean ** 2)
 
     # Standard error (with protection for negative variance due to floating point)
     se = np.sqrt(np.maximum(var, 0.0))
@@ -350,16 +348,23 @@ def _ridge_permutation_numpy(
     # P-value: (count + 1) / (n_rand + 1)
     pvalue = (pvalue_counts + 1.0) / (n_rand + 1.0)
 
-    return {"beta": beta, "se": se, "zscore": zscore, "pvalue": pvalue}
+    return {
+        'beta': beta,
+        'se': se,
+        'zscore': zscore,
+        'pvalue': pvalue
+    }
 
 
 # =============================================================================
 # NumPy Backend - T-Test (n_rand=0)
 # =============================================================================
 
-
 def _ridge_ttest_numpy(
-    X: np.ndarray, Y: np.ndarray, lambda_: float, verbose: bool
+    X: np.ndarray,
+    Y: np.ndarray,
+    lambda_: float,
+    verbose: bool
 ) -> dict[str, np.ndarray]:
     """
     NumPy implementation of ridge regression with analytical t-test.
@@ -367,7 +372,7 @@ def _ridge_ttest_numpy(
     Used when n_rand=0 for faster computation with parametric inference.
     """
     n_genes, n_features = X.shape
-    Y.shape[1]
+    n_samples = Y.shape[1]
 
     # --- Step 1: Compute T = (X'X + λI)^{-1} X' ---
     if verbose:
@@ -402,7 +407,7 @@ def _ridge_ttest_numpy(
     residuals = Y - Y_hat
 
     # Residual sum of squares per sample
-    rss = np.sum(residuals**2, axis=0)  # (n_samples,)
+    rss = np.sum(residuals ** 2, axis=0)  # (n_samples,)
 
     # Degrees of freedom
     df = n_genes - n_features
@@ -429,13 +434,18 @@ def _ridge_ttest_numpy(
     pvalue = 2.0 * stats.t.sf(np.abs(zscore), df=df)
     pvalue = np.clip(pvalue, 0.0, 1.0)
 
-    return {"beta": beta, "se": se, "zscore": zscore, "pvalue": pvalue, "df": float(df)}
+    return {
+        'beta': beta,
+        'se': se,
+        'zscore': zscore,
+        'pvalue': pvalue,
+        'df': float(df)
+    }
 
 
 # =============================================================================
 # CuPy Backend
 # =============================================================================
-
 
 def _ridge_cupy(
     X: np.ndarray,
@@ -445,7 +455,7 @@ def _ridge_cupy(
     seed: int,
     use_gsl_rng: bool,
     use_cache: bool,
-    verbose: bool,
+    verbose: bool
 ) -> dict[str, np.ndarray]:
     """
     CuPy GPU implementation of ridge regression with permutation testing.
@@ -460,7 +470,8 @@ def _ridge_cupy(
 
     if n_rand == 0:
         raise NotImplementedError(
-            "T-test (n_rand=0) not implemented for CuPy backend. Use backend='numpy' for t-test."
+            "T-test (n_rand=0) not implemented for CuPy backend. "
+            "Use backend='numpy' for t-test."
         )
 
     n_genes, n_features = X.shape
@@ -497,9 +508,9 @@ def _ridge_cupy(
 
     # Free intermediate GPU memory
     del XtX, XtX_reg, X_gpu
-    if "L" in dir():
+    if 'L' in dir():
         del L
-    if "Z" in dir():
+    if 'Z' in dir():
         del Z
     del XtX_inv
     cp.get_default_memory_pool().free_all_blocks()
@@ -526,7 +537,7 @@ def _ridge_cupy(
     else:
         # Fast NumPy RNG (~70x faster, no caching needed)
         if verbose:
-            print("  Generating permutation table (fast NumPy RNG)...")
+            print(f"  Generating permutation table (fast NumPy RNG)...")
         inv_perm_table = generate_inverse_permutation_table_fast(n_genes, n_rand, seed)
 
     # Accumulators on GPU
@@ -554,7 +565,7 @@ def _ridge_cupy(
             # Accumulate statistics
             pvalue_counts += (cp.abs(beta_perm) >= abs_beta).astype(cp.float64)
             aver += beta_perm
-            aver_sq += beta_perm**2
+            aver_sq += beta_perm ** 2
 
             del inv_perm_idx_gpu, T_perm, beta_perm
 
@@ -566,7 +577,7 @@ def _ridge_cupy(
         print("  finalizing statistics on GPU...")
 
     mean = aver / n_rand
-    var = (aver_sq / n_rand) - (mean**2)
+    var = (aver_sq / n_rand) - (mean ** 2)
     se_gpu = cp.sqrt(cp.maximum(var, 0.0))
     zscore_gpu = cp.where(se_gpu > EPS, (beta_gpu - mean) / se_gpu, 0.0)
     pvalue_gpu = (pvalue_counts + 1.0) / (n_rand + 1.0)
@@ -586,15 +597,22 @@ def _ridge_cupy(
     cp.get_default_memory_pool().free_all_blocks()
     gc.collect()
 
-    return {"beta": beta, "se": se, "zscore": zscore, "pvalue": pvalue}
+    return {
+        'beta': beta,
+        'se': se,
+        'zscore': zscore,
+        'pvalue': pvalue
+    }
 
 
 # =============================================================================
 # Utility Functions
 # =============================================================================
 
-
-def compute_projection_matrix(X: np.ndarray, lambda_: float = DEFAULT_LAMBDA) -> np.ndarray:
+def compute_projection_matrix(
+    X: np.ndarray,
+    lambda_: float = DEFAULT_LAMBDA
+) -> np.ndarray:
     """
     Compute the ridge regression projection matrix T = (X'X + λI)^{-1} X'.
 
@@ -633,7 +651,7 @@ def ridge_with_precomputed_T(
     Y: np.ndarray,
     n_rand: int = DEFAULT_NRAND,
     seed: int = DEFAULT_SEED,
-    use_gsl_rng: bool = True,
+    use_gsl_rng: bool = True
 ) -> dict[str, np.ndarray]:
     """
     Ridge regression using precomputed projection matrix.
@@ -668,13 +686,17 @@ def ridge_with_precomputed_T(
     n_samples = Y.shape[1]
 
     if Y.shape[0] != n_genes:
-        raise ValueError(f"Y rows ({Y.shape[0]}) must match T columns ({n_genes})")
+        raise ValueError(
+            f"Y rows ({Y.shape[0]}) must match T columns ({n_genes})"
+        )
 
     # Compute beta
     beta = T @ Y
 
     if n_rand == 0:
-        raise NotImplementedError("T-test requires X matrix. Use ridge() directly.")
+        raise NotImplementedError(
+            "T-test requires X matrix. Use ridge() directly."
+        )
 
     # Permutation testing with T-column permutation
     if use_gsl_rng:
@@ -696,15 +718,20 @@ def ridge_with_precomputed_T(
 
         pvalue_counts += (np.abs(beta_perm) >= abs_beta).astype(np.float64)
         aver += beta_perm
-        aver_sq += beta_perm**2
+        aver_sq += beta_perm ** 2
 
     mean = aver / n_rand
-    var = (aver_sq / n_rand) - (mean**2)
+    var = (aver_sq / n_rand) - (mean ** 2)
     se = np.sqrt(np.maximum(var, 0.0))
     zscore = np.where(se > EPS, (beta - mean) / se, 0.0)
     pvalue = (pvalue_counts + 1.0) / (n_rand + 1.0)
 
-    return {"beta": beta, "se": se, "zscore": zscore, "pvalue": pvalue}
+    return {
+        'beta': beta,
+        'se': se,
+        'zscore': zscore,
+        'pvalue': pvalue
+    }
 
 
 # =============================================================================
@@ -733,37 +760,34 @@ if __name__ == "__main__":
 
     # Test 1: Basic permutation test
     print("\n1. Testing permutation test (NumPy)...")
-    result = ridge(X, Y, lambda_=5e5, n_rand=100, seed=0, backend="numpy", verbose=True)
+    result = ridge(X, Y, lambda_=5e5, n_rand=100, seed=0, backend='numpy', verbose=True)
     print(f"   beta shape: {result['beta'].shape}")
     print(f"   pvalue range: [{result['pvalue'].min():.4f}, {result['pvalue'].max():.4f}]")
     print(f"   zscore range: [{result['zscore'].min():.4f}, {result['zscore'].max():.4f}]")
 
     # Test 2: T-test
     print("\n2. Testing t-test (n_rand=0)...")
-    result_ttest = ridge(X, Y, lambda_=5e5, n_rand=0, backend="numpy", verbose=True)
+    result_ttest = ridge(X, Y, lambda_=5e5, n_rand=0, backend='numpy', verbose=True)
     print(f"   df: {result_ttest['df']}")
-    print(
-        f"   pvalue range: [{result_ttest['pvalue'].min():.6f}, {result_ttest['pvalue'].max():.6f}]"
-    )
+    print(f"   pvalue range: [{result_ttest['pvalue'].min():.6f}, {result_ttest['pvalue'].max():.6f}]")
 
     # Test 3: Reproducibility
     print("\n3. Testing reproducibility...")
-    result1 = ridge(X, Y, lambda_=5e5, n_rand=100, seed=0, backend="numpy")
-    result2 = ridge(X, Y, lambda_=5e5, n_rand=100, seed=0, backend="numpy")
+    result1 = ridge(X, Y, lambda_=5e5, n_rand=100, seed=0, backend='numpy')
+    result2 = ridge(X, Y, lambda_=5e5, n_rand=100, seed=0, backend='numpy')
 
-    if np.allclose(result1["beta"], result2["beta"]) and np.allclose(
-        result1["pvalue"], result2["pvalue"]
-    ):
+    if np.allclose(result1['beta'], result2['beta']) and \
+       np.allclose(result1['pvalue'], result2['pvalue']):
         print("   ✓ Results are reproducible with same seed")
     else:
         print("   ✗ Results differ!")
 
     # Test 4: Different seeds
     print("\n4. Testing different seeds produce different results...")
-    result_seed0 = ridge(X, Y, lambda_=5e5, n_rand=100, seed=0, backend="numpy")
-    result_seed1 = ridge(X, Y, lambda_=5e5, n_rand=100, seed=1, backend="numpy")
+    result_seed0 = ridge(X, Y, lambda_=5e5, n_rand=100, seed=0, backend='numpy')
+    result_seed1 = ridge(X, Y, lambda_=5e5, n_rand=100, seed=1, backend='numpy')
 
-    if not np.allclose(result_seed0["pvalue"], result_seed1["pvalue"]):
+    if not np.allclose(result_seed0['pvalue'], result_seed1['pvalue']):
         print("   ✓ Different seeds produce different p-values")
     else:
         print("   ✗ Seeds don't affect results!")
@@ -773,9 +797,8 @@ if __name__ == "__main__":
     T = compute_projection_matrix(X, lambda_=5e5)
     result_precomp = ridge_with_precomputed_T(T, Y, n_rand=100, seed=0)
 
-    if np.allclose(result1["beta"], result_precomp["beta"]) and np.allclose(
-        result1["pvalue"], result_precomp["pvalue"]
-    ):
+    if np.allclose(result1['beta'], result_precomp['beta']) and \
+       np.allclose(result1['pvalue'], result_precomp['pvalue']):
         print("   ✓ Precomputed T gives same results")
     else:
         print("   ✗ Precomputed T differs!")
@@ -784,19 +807,16 @@ if __name__ == "__main__":
     print(f"\n6. CuPy backend available: {CUPY_AVAILABLE}")
     if CUPY_AVAILABLE:
         print("   Testing CuPy backend...")
-        result_gpu = ridge(X, Y, lambda_=5e5, n_rand=100, seed=0, backend="cupy", verbose=True)
+        result_gpu = ridge(X, Y, lambda_=5e5, n_rand=100, seed=0, backend='cupy', verbose=True)
 
         # Compare with NumPy results
-        if np.allclose(result1["beta"], result_gpu["beta"], rtol=1e-10) and np.allclose(
-            result1["pvalue"], result_gpu["pvalue"], rtol=1e-10
-        ):
+        if np.allclose(result1['beta'], result_gpu['beta'], rtol=1e-10) and \
+           np.allclose(result1['pvalue'], result_gpu['pvalue'], rtol=1e-10):
             print("   ✓ CuPy produces identical results to NumPy")
         else:
-            beta_diff = np.abs(result1["beta"] - result_gpu["beta"]).max()
-            pval_diff = np.abs(result1["pvalue"] - result_gpu["pvalue"]).max()
-            print(
-                f"   ✗ Results differ! max beta diff: {beta_diff:.2e}, max pvalue diff: {pval_diff:.2e}"
-            )
+            beta_diff = np.abs(result1['beta'] - result_gpu['beta']).max()
+            pval_diff = np.abs(result1['pvalue'] - result_gpu['pvalue']).max()
+            print(f"   ✗ Results differ! max beta diff: {beta_diff:.2e}, max pvalue diff: {pval_diff:.2e}")
 
     # Test 7: Performance benchmark
     print("\n7. Performance benchmark...")
@@ -812,18 +832,18 @@ if __name__ == "__main__":
     print(f"   Permutations: {n_rand_bench}")
 
     start = time.time()
-    _ = ridge(X_bench, Y_bench, n_rand=n_rand_bench, backend="numpy")
+    _ = ridge(X_bench, Y_bench, n_rand=n_rand_bench, backend='numpy')
     numpy_time = time.time() - start
     print(f"   NumPy: {numpy_time:.3f}s")
 
     if CUPY_AVAILABLE:
         # Warmup
-        _ = ridge(X_bench, Y_bench, n_rand=10, backend="cupy")
+        _ = ridge(X_bench, Y_bench, n_rand=10, backend='cupy')
 
         start = time.time()
-        _ = ridge(X_bench, Y_bench, n_rand=n_rand_bench, backend="cupy")
+        _ = ridge(X_bench, Y_bench, n_rand=n_rand_bench, backend='cupy')
         cupy_time = time.time() - start
-        print(f"   CuPy:  {cupy_time:.3f}s (speedup: {numpy_time / cupy_time:.1f}x)")
+        print(f"   CuPy:  {cupy_time:.3f}s (speedup: {numpy_time/cupy_time:.1f}x)")
 
     print("\n" + "=" * 60)
     print("Testing complete.")

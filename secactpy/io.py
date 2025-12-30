@@ -26,23 +26,22 @@ Usage:
     >>> adata = load_as_anndata("results.h5ad")
 """
 
-import warnings
-from pathlib import Path
-from typing import Any, Optional, Union
-
 import numpy as np
 import pandas as pd
+from typing import Optional, Any, Union, List
+from pathlib import Path
+import warnings
 
 __all__ = [
-    "load_results",
-    "save_results",
-    "results_to_anndata",
-    "load_as_anndata",
-    "results_to_dataframes",
-    "save_st_results_to_h5ad",
-    "add_activity_to_anndata",
-    "H5PY_AVAILABLE",
-    "ANNDATA_AVAILABLE",
+    'load_results',
+    'save_results',
+    'results_to_anndata',
+    'load_as_anndata',
+    'results_to_dataframes',
+    'save_st_results_to_h5ad',
+    'add_activity_to_anndata',
+    'H5PY_AVAILABLE',
+    'ANNDATA_AVAILABLE',
 ]
 
 
@@ -53,7 +52,6 @@ __all__ = [
 H5PY_AVAILABLE = False
 try:
     import h5py
-
     H5PY_AVAILABLE = True
 except ImportError:
     pass
@@ -61,7 +59,6 @@ except ImportError:
 ANNDATA_AVAILABLE = False
 try:
     import anndata
-
     ANNDATA_AVAILABLE = True
 except ImportError:
     pass
@@ -71,9 +68,10 @@ except ImportError:
 # Loading Functions
 # =============================================================================
 
-
 def load_results(
-    path: Union[str, Path], load_arrays: bool = True, mmap_mode: Optional[str] = None
+    path: Union[str, Path],
+    load_arrays: bool = True,
+    mmap_mode: Optional[str] = None
 ) -> dict[str, Any]:
     """
     Load results from HDF5 file created by ridge_batch.
@@ -119,10 +117,10 @@ def load_results(
     result = {}
 
     # Open file
-    f = h5py.File(path, "r")
+    f = h5py.File(path, 'r')
 
     # Load or reference arrays
-    array_names = ["beta", "se", "zscore", "pvalue"]
+    array_names = ['beta', 'se', 'zscore', 'pvalue']
     for name in array_names:
         if name in f:
             if load_arrays:
@@ -131,26 +129,26 @@ def load_results(
                 result[name] = f[name]  # Keep as h5py dataset
 
     # Load metadata
-    result["attrs"] = dict(f.attrs)
+    result['attrs'] = dict(f.attrs)
 
     # Decode feature/sample names
-    if "feature_names" in f.attrs:
-        names = f.attrs["feature_names"]
+    if 'feature_names' in f.attrs:
+        names = f.attrs['feature_names']
         if isinstance(names[0], bytes):
-            result["feature_names"] = [n.decode("utf-8") for n in names]
+            result['feature_names'] = [n.decode('utf-8') for n in names]
         else:
-            result["feature_names"] = list(names)
+            result['feature_names'] = list(names)
 
-    if "sample_names" in f.attrs:
-        names = f.attrs["sample_names"]
+    if 'sample_names' in f.attrs:
+        names = f.attrs['sample_names']
         if isinstance(names[0], bytes):
-            result["sample_names"] = [n.decode("utf-8") for n in names]
+            result['sample_names'] = [n.decode('utf-8') for n in names]
         else:
-            result["sample_names"] = list(names)
+            result['sample_names'] = list(names)
 
     # Keep file handle for lazy loading
     if not load_arrays:
-        result["_file"] = f
+        result['_file'] = f
     else:
         f.close()
 
@@ -159,8 +157,8 @@ def load_results(
 
 def results_to_dataframes(
     results: dict[str, Any],
-    feature_names: Optional[list[str]] = None,
-    sample_names: Optional[list[str]] = None,
+    feature_names: Optional[List[str]] = None,
+    sample_names: Optional[List[str]] = None
 ) -> dict[str, pd.DataFrame]:
     """
     Convert results arrays to labeled pandas DataFrames.
@@ -182,7 +180,7 @@ def results_to_dataframes(
         Dictionary with 'beta', 'se', 'zscore', 'pvalue' as DataFrames.
     """
     # Get array shape
-    beta = results.get("beta")
+    beta = results.get('beta')
     if beta is None:
         raise ValueError("Results must contain 'beta' array")
 
@@ -190,17 +188,19 @@ def results_to_dataframes(
 
     # Get or generate names
     if feature_names is None:
-        feature_names = results.get("feature_names", [f"Feature_{i}" for i in range(n_features)])
+        feature_names = results.get('feature_names',
+                                     [f"Feature_{i}" for i in range(n_features)])
     if sample_names is None:
-        sample_names = results.get("sample_names", [f"Sample_{i}" for i in range(n_samples)])
+        sample_names = results.get('sample_names',
+                                    [f"Sample_{i}" for i in range(n_samples)])
 
     # Convert to DataFrames
     dfs = {}
-    for name in ["beta", "se", "zscore", "pvalue"]:
+    for name in ['beta', 'se', 'zscore', 'pvalue']:
         if name in results:
             arr = results[name]
             # Handle h5py datasets
-            if hasattr(arr, "shape") and not isinstance(arr, np.ndarray):
+            if hasattr(arr, 'shape') and not isinstance(arr, np.ndarray):
                 arr = arr[:]
             dfs[name] = pd.DataFrame(arr, index=feature_names, columns=sample_names)
 
@@ -211,13 +211,12 @@ def results_to_dataframes(
 # AnnData Conversion
 # =============================================================================
 
-
 def results_to_anndata(
     results: dict[str, Any],
-    feature_names: Optional[list[str]] = None,
-    sample_names: Optional[list[str]] = None,
-    primary_layer: str = "zscore",
-) -> "anndata.AnnData":
+    feature_names: Optional[List[str]] = None,
+    sample_names: Optional[List[str]] = None,
+    primary_layer: str = 'zscore'
+) -> 'anndata.AnnData':
     """
     Convert results to AnnData format for scanpy integration.
 
@@ -265,53 +264,56 @@ def results_to_anndata(
     """
     if not ANNDATA_AVAILABLE:
         raise ImportError(
-            "anndata required for AnnData conversion. Install with: pip install anndata"
+            "anndata required for AnnData conversion. "
+            "Install with: pip install anndata"
         )
 
     # Get array
-    beta = results.get("beta")
+    beta = results.get('beta')
     if beta is None:
         raise ValueError("Results must contain 'beta' array")
 
     # Handle h5py datasets
-    if hasattr(beta, "shape") and not isinstance(beta, np.ndarray):
+    if hasattr(beta, 'shape') and not isinstance(beta, np.ndarray):
         beta = beta[:]
 
     n_features, n_samples = beta.shape
 
     # Get or generate names
     if feature_names is None:
-        feature_names = results.get("feature_names", [f"Feature_{i}" for i in range(n_features)])
+        feature_names = results.get('feature_names',
+                                     [f"Feature_{i}" for i in range(n_features)])
     if sample_names is None:
-        sample_names = results.get("sample_names", [f"Sample_{i}" for i in range(n_samples)])
+        sample_names = results.get('sample_names',
+                                    [f"Sample_{i}" for i in range(n_samples)])
 
     # Get primary layer
     primary = results.get(primary_layer)
     if primary is None:
         primary = beta
         warnings.warn(f"Primary layer '{primary_layer}' not found, using 'beta'")
-    if hasattr(primary, "shape") and not isinstance(primary, np.ndarray):
+    if hasattr(primary, 'shape') and not isinstance(primary, np.ndarray):
         primary = primary[:]
 
     # Create AnnData (transposed: samples as obs)
     adata = anndata.AnnData(
         X=primary.T,  # (n_samples, n_features)
         obs=pd.DataFrame(index=sample_names),
-        var=pd.DataFrame(index=feature_names),
+        var=pd.DataFrame(index=feature_names)
     )
 
     # Add all layers
-    for name in ["beta", "se", "zscore", "pvalue"]:
+    for name in ['beta', 'se', 'zscore', 'pvalue']:
         if name in results:
             arr = results[name]
-            if hasattr(arr, "shape") and not isinstance(arr, np.ndarray):
+            if hasattr(arr, 'shape') and not isinstance(arr, np.ndarray):
                 arr = arr[:]
             adata.layers[name] = arr.T  # Transpose to (n_samples, n_features)
 
     # Add any additional attributes
-    if "attrs" in results:
-        for key, value in results["attrs"].items():
-            if key not in ["feature_names", "sample_names"]:
+    if 'attrs' in results:
+        for key, value in results['attrs'].items():
+            if key not in ['feature_names', 'sample_names']:
                 adata.uns[key] = value
 
     return adata
@@ -321,12 +323,12 @@ def save_st_results_to_h5ad(
     counts,
     activity_results: dict[str, Any],
     output_path: Union[str, Path],
-    gene_names: Optional[list[str]] = None,
-    cell_names: Optional[list[str]] = None,
+    gene_names: Optional[List[str]] = None,
+    cell_names: Optional[List[str]] = None,
     spatial_coords: Optional[pd.DataFrame] = None,
     metadata: Optional[pd.DataFrame] = None,
-    platform: str = "unknown",
-) -> "anndata.AnnData":
+    platform: str = "unknown"
+) -> 'anndata.AnnData':
     """
     Save spatial transcriptomics data with activity results to h5ad format.
 
@@ -397,7 +399,9 @@ def save_st_results_to_h5ad(
     Protein names are stored in adata.uns['SecAct_protein_names'].
     """
     if not ANNDATA_AVAILABLE:
-        raise ImportError("anndata required. Install with: pip install anndata")
+        raise ImportError(
+            "anndata required. Install with: pip install anndata"
+        )
 
     from scipy import sparse
 
@@ -426,21 +430,25 @@ def save_st_results_to_h5ad(
         obs = pd.DataFrame(index=cell_names)
 
     # Add platform info
-    obs["platform"] = platform
+    obs['platform'] = platform
 
     # Create var DataFrame
     var = pd.DataFrame(index=gene_names)
 
     # Create AnnData
-    adata = anndata.AnnData(X=X, obs=obs, var=var)
+    adata = anndata.AnnData(
+        X=X,
+        obs=obs,
+        var=var
+    )
 
     # Add spatial coordinates
     if spatial_coords is not None:
         # Extract x, y coordinates
-        if "pixel_row" in spatial_coords.columns and "pixel_col" in spatial_coords.columns:
-            spatial_array = spatial_coords[["pixel_col", "pixel_row"]].values
-        elif "x" in spatial_coords.columns and "y" in spatial_coords.columns:
-            spatial_array = spatial_coords[["x", "y"]].values
+        if 'pixel_row' in spatial_coords.columns and 'pixel_col' in spatial_coords.columns:
+            spatial_array = spatial_coords[['pixel_col', 'pixel_row']].values
+        elif 'x' in spatial_coords.columns and 'y' in spatial_coords.columns:
+            spatial_array = spatial_coords[['x', 'y']].values
         elif spatial_coords.shape[1] >= 2:
             spatial_array = spatial_coords.iloc[:, :2].values
         else:
@@ -449,15 +457,15 @@ def save_st_results_to_h5ad(
         if spatial_array is not None:
             # Ensure correct order
             if len(spatial_coords) == n_cells:
-                adata.obsm["spatial"] = spatial_array
+                adata.obsm['spatial'] = spatial_array
             else:
                 # Reindex to match cell_names
                 try:
                     aligned_coords = spatial_coords.loc[cell_names]
-                    if "pixel_row" in aligned_coords.columns:
-                        adata.obsm["spatial"] = aligned_coords[["pixel_col", "pixel_row"]].values
+                    if 'pixel_row' in aligned_coords.columns:
+                        adata.obsm['spatial'] = aligned_coords[['pixel_col', 'pixel_row']].values
                     else:
-                        adata.obsm["spatial"] = aligned_coords.iloc[:, :2].values
+                        adata.obsm['spatial'] = aligned_coords.iloc[:, :2].values
                 except KeyError:
                     warnings.warn("Could not align spatial coordinates with cell names")
 
@@ -465,7 +473,7 @@ def save_st_results_to_h5ad(
     # Activity results are (proteins × cells), need to transpose to (cells × proteins)
     protein_names = None
 
-    for result_name in ["beta", "se", "zscore", "pvalue"]:
+    for result_name in ['beta', 'se', 'zscore', 'pvalue']:
         if result_name in activity_results:
             result_df = activity_results[result_name]
 
@@ -489,18 +497,18 @@ def save_st_results_to_h5ad(
                         )
                         result_aligned = result_df.T
 
-                adata.obsm[f"SecAct_{result_name}"] = result_aligned.values
+                adata.obsm[f'SecAct_{result_name}'] = result_aligned.values
             else:
                 # Assume it's an array (proteins × cells)
-                adata.obsm[f"SecAct_{result_name}"] = np.asarray(result_df).T
+                adata.obsm[f'SecAct_{result_name}'] = np.asarray(result_df).T
 
     # Store protein names
     if protein_names is not None:
-        adata.uns["SecAct_protein_names"] = protein_names
+        adata.uns['SecAct_protein_names'] = protein_names
 
     # Store platform info
-    adata.uns["platform"] = platform
-    adata.uns["secactpy_version"] = "0.1.0"
+    adata.uns['platform'] = platform
+    adata.uns['secactpy_version'] = "0.1.0"
 
     # Save to h5ad
     adata.write_h5ad(output_path)
@@ -515,12 +523,12 @@ def save_st_results_to_h5ad(
 
 
 def add_activity_to_anndata(
-    adata: "anndata.AnnData",
+    adata: 'anndata.AnnData',
     activity_results: dict[str, Any],
     key_prefix: str = "SecAct",
     layer_name: Optional[str] = "SecAct_zscore",
-    copy: bool = False,
-) -> "anndata.AnnData":
+    copy: bool = False
+) -> 'anndata.AnnData':
     """
     Add activity inference results to an existing AnnData object.
 
@@ -596,7 +604,9 @@ def add_activity_to_anndata(
         il6_activity = adata.obsm['SecAct_zscore'][:, protein_idx]
     """
     if not ANNDATA_AVAILABLE:
-        raise ImportError("anndata required. Install with: pip install anndata")
+        raise ImportError(
+            "anndata required. Install with: pip install anndata"
+        )
 
     if copy:
         adata = adata.copy()
@@ -608,7 +618,7 @@ def add_activity_to_anndata(
     # Get protein names from first result
     protein_names = None
 
-    for result_name in ["beta", "se", "zscore", "pvalue"]:
+    for result_name in ['beta', 'se', 'zscore', 'pvalue']:
         if result_name not in activity_results:
             continue
 
@@ -635,12 +645,12 @@ def add_activity_to_anndata(
                     result_df = result_df[cell_names]
                 else:
                     warnings.warn(
-                        "Cell names in activity results don't exactly match AnnData. "
-                        "Using activity column order."
+                        f"Cell names in activity results don't exactly match AnnData. "
+                        f"Using activity column order."
                     )
 
             # Transpose to (cells × proteins) and add to obsm
-            adata.obsm[f"{key_prefix}_{result_name}"] = result_df.T.values
+            adata.obsm[f'{key_prefix}_{result_name}'] = result_df.T.values
 
         else:
             # Assume numpy array (proteins × cells)
@@ -649,22 +659,22 @@ def add_activity_to_anndata(
                 raise ValueError(
                     f"Activity array has {arr.shape[1]} columns but AnnData has {n_cells} cells."
                 )
-            adata.obsm[f"{key_prefix}_{result_name}"] = arr.T
+            adata.obsm[f'{key_prefix}_{result_name}'] = arr.T
 
     # Store protein names
     if protein_names is not None:
-        adata.uns[f"{key_prefix}_protein_names"] = protein_names
-        adata.uns[f"{key_prefix}_n_proteins"] = len(protein_names)
+        adata.uns[f'{key_prefix}_protein_names'] = protein_names
+        adata.uns[f'{key_prefix}_n_proteins'] = len(protein_names)
 
     # Store metadata
-    adata.uns[f"{key_prefix}_inference_type"] = "single_cell"
-    adata.uns["secactpy_version"] = "0.1.0"
+    adata.uns[f'{key_prefix}_inference_type'] = 'single_cell'
+    adata.uns['secactpy_version'] = "0.1.0"
 
     # Optionally add z-scores as a layer (for easy visualization)
     # Note: layers must have shape (n_obs, n_vars), but our activity is (n_obs, n_proteins)
     # So we can't add it as a standard layer. Instead, we document how to use obsm.
 
-    print("Added activity results to AnnData:")
+    print(f"Added activity results to AnnData:")
     print(f"  Cells: {n_cells}")
     print(f"  Proteins: {len(protein_names) if protein_names else 'unknown'}")
     print(f"  Added to obsm: {[k for k in adata.obsm.keys() if k.startswith(key_prefix)]}")
@@ -673,7 +683,10 @@ def add_activity_to_anndata(
     return adata
 
 
-def load_as_anndata(path: Union[str, Path], primary_layer: str = "zscore") -> "anndata.AnnData":
+def load_as_anndata(
+    path: Union[str, Path],
+    primary_layer: str = 'zscore'
+) -> 'anndata.AnnData':
     """
     Load HDF5 results directly as AnnData.
 
@@ -699,14 +712,13 @@ def load_as_anndata(path: Union[str, Path], primary_layer: str = "zscore") -> "a
 # Saving Functions
 # =============================================================================
 
-
 def save_results(
     results: dict[str, Any],
     path: Union[str, Path],
-    format: str = "auto",
-    compression: Optional[str] = "gzip",
-    feature_names: Optional[list[str]] = None,
-    sample_names: Optional[list[str]] = None,
+    format: str = 'auto',
+    compression: Optional[str] = 'gzip',
+    feature_names: Optional[List[str]] = None,
+    sample_names: Optional[List[str]] = None
 ) -> None:
     """
     Save results to file.
@@ -729,22 +741,22 @@ def save_results(
     path = Path(path)
 
     # Auto-detect format
-    if format == "auto":
+    if format == 'auto':
         suffix = path.suffix.lower()
-        if suffix in [".h5", ".hdf5", ".h5ad"]:
-            format = "h5"
-        elif suffix == ".csv":
-            format = "csv"
-        elif suffix == ".parquet":
-            format = "parquet"
+        if suffix in ['.h5', '.hdf5', '.h5ad']:
+            format = 'h5'
+        elif suffix == '.csv':
+            format = 'csv'
+        elif suffix == '.parquet':
+            format = 'parquet'
         else:
-            format = "h5"  # Default
+            format = 'h5'  # Default
 
-    if format in ["h5", "h5ad", "hdf5"]:
+    if format in ['h5', 'h5ad', 'hdf5']:
         _save_hdf5(results, path, compression, feature_names, sample_names)
-    elif format == "csv":
+    elif format == 'csv':
         _save_csv(results, path, feature_names, sample_names)
-    elif format == "parquet":
+    elif format == 'parquet':
         _save_parquet(results, path, feature_names, sample_names)
     else:
         raise ValueError(f"Unknown format: {format}")
@@ -754,39 +766,39 @@ def _save_hdf5(
     results: dict[str, Any],
     path: Path,
     compression: Optional[str],
-    feature_names: Optional[list[str]],
-    sample_names: Optional[list[str]],
+    feature_names: Optional[List[str]],
+    sample_names: Optional[List[str]]
 ) -> None:
     """Save results to HDF5."""
     if not H5PY_AVAILABLE:
         raise ImportError("h5py required. Install with: pip install h5py")
 
-    with h5py.File(path, "w") as f:
+    with h5py.File(path, 'w') as f:
         # Save arrays
-        for name in ["beta", "se", "zscore", "pvalue"]:
+        for name in ['beta', 'se', 'zscore', 'pvalue']:
             if name in results:
                 arr = results[name]
-                if hasattr(arr, "shape") and not isinstance(arr, np.ndarray):
+                if hasattr(arr, 'shape') and not isinstance(arr, np.ndarray):
                     arr = arr[:]
                 f.create_dataset(name, data=arr, compression=compression)
 
         # Save names
         if feature_names is not None:
-            f.attrs["feature_names"] = np.array(feature_names, dtype="S")
-        elif "feature_names" in results:
-            f.attrs["feature_names"] = np.array(results["feature_names"], dtype="S")
+            f.attrs['feature_names'] = np.array(feature_names, dtype='S')
+        elif 'feature_names' in results:
+            f.attrs['feature_names'] = np.array(results['feature_names'], dtype='S')
 
         if sample_names is not None:
-            f.attrs["sample_names"] = np.array(sample_names, dtype="S")
-        elif "sample_names" in results:
-            f.attrs["sample_names"] = np.array(results["sample_names"], dtype="S")
+            f.attrs['sample_names'] = np.array(sample_names, dtype='S')
+        elif 'sample_names' in results:
+            f.attrs['sample_names'] = np.array(results['sample_names'], dtype='S')
 
 
 def _save_csv(
     results: dict[str, Any],
     path: Path,
-    feature_names: Optional[list[str]],
-    sample_names: Optional[list[str]],
+    feature_names: Optional[List[str]],
+    sample_names: Optional[List[str]]
 ) -> None:
     """Save results to CSV files (one per array)."""
     dfs = results_to_dataframes(results, feature_names, sample_names)
@@ -803,8 +815,8 @@ def _save_csv(
 def _save_parquet(
     results: dict[str, Any],
     path: Path,
-    feature_names: Optional[list[str]],
-    sample_names: Optional[list[str]],
+    feature_names: Optional[List[str]],
+    sample_names: Optional[List[str]]
 ) -> None:
     """Save results to Parquet files."""
     try:
@@ -825,7 +837,6 @@ def _save_parquet(
 # =============================================================================
 # Utility Functions
 # =============================================================================
-
 
 def get_file_info(path: Union[str, Path]) -> dict[str, Any]:
     """
@@ -851,32 +862,35 @@ def get_file_info(path: Union[str, Path]) -> dict[str, Any]:
         raise ImportError("h5py required")
 
     path = Path(path)
-    info = {"path": str(path), "file_size_mb": path.stat().st_size / (1024 * 1024)}
+    info = {
+        'path': str(path),
+        'file_size_mb': path.stat().st_size / (1024 * 1024)
+    }
 
-    with h5py.File(path, "r") as f:
-        info["datasets"] = list(f.keys())
+    with h5py.File(path, 'r') as f:
+        info['datasets'] = list(f.keys())
 
-        if "beta" in f:
-            info["shape"] = f["beta"].shape
-            info["dtype"] = str(f["beta"].dtype)
-            info["compression"] = f["beta"].compression
-            info["chunks"] = f["beta"].chunks
+        if 'beta' in f:
+            info['shape'] = f['beta'].shape
+            info['dtype'] = str(f['beta'].dtype)
+            info['compression'] = f['beta'].compression
+            info['chunks'] = f['beta'].chunks
 
-        info["has_feature_names"] = "feature_names" in f.attrs
-        info["has_sample_names"] = "sample_names" in f.attrs
+        info['has_feature_names'] = 'feature_names' in f.attrs
+        info['has_sample_names'] = 'sample_names' in f.attrs
 
-        if info["has_feature_names"]:
-            info["n_features"] = len(f.attrs["feature_names"])
-        if info["has_sample_names"]:
-            info["n_samples"] = len(f.attrs["sample_names"])
+        if info['has_feature_names']:
+            info['n_features'] = len(f.attrs['feature_names'])
+        if info['has_sample_names']:
+            info['n_samples'] = len(f.attrs['sample_names'])
 
     return info
 
 
 def concatenate_results(
-    result_files: list[Union[str, Path]],
+    result_files: List[Union[str, Path]],
     output_path: Optional[Union[str, Path]] = None,
-    axis: int = 1,
+    axis: int = 1
 ) -> Optional[dict[str, Any]]:
     """
     Concatenate multiple result files.
@@ -906,7 +920,7 @@ def concatenate_results(
 
     # Concatenate arrays
     concatenated = {}
-    for name in ["beta", "se", "zscore", "pvalue"]:
+    for name in ['beta', 'se', 'zscore', 'pvalue']:
         arrays = [r[name] for r in all_results if name in r]
         if arrays:
             concatenated[name] = np.concatenate(arrays, axis=axis)
@@ -915,24 +929,24 @@ def concatenate_results(
     if axis == 1:  # Concatenating samples
         all_sample_names = []
         for r in all_results:
-            if "sample_names" in r:
-                all_sample_names.extend(r["sample_names"])
+            if 'sample_names' in r:
+                all_sample_names.extend(r['sample_names'])
         if all_sample_names:
-            concatenated["sample_names"] = all_sample_names
+            concatenated['sample_names'] = all_sample_names
 
         # Feature names should be the same
-        if "feature_names" in all_results[0]:
-            concatenated["feature_names"] = all_results[0]["feature_names"]
+        if 'feature_names' in all_results[0]:
+            concatenated['feature_names'] = all_results[0]['feature_names']
     else:  # Concatenating features
         all_feature_names = []
         for r in all_results:
-            if "feature_names" in r:
-                all_feature_names.extend(r["feature_names"])
+            if 'feature_names' in r:
+                all_feature_names.extend(r['feature_names'])
         if all_feature_names:
-            concatenated["feature_names"] = all_feature_names
+            concatenated['feature_names'] = all_feature_names
 
-        if "sample_names" in all_results[0]:
-            concatenated["sample_names"] = all_results[0]["sample_names"]
+        if 'sample_names' in all_results[0]:
+            concatenated['sample_names'] = all_results[0]['sample_names']
 
     if output_path is not None:
         save_results(concatenated, output_path)
@@ -946,14 +960,14 @@ def concatenate_results(
 # =============================================================================
 
 if __name__ == "__main__":
-    import os
     import tempfile
+    import os
 
     print("=" * 60)
     print("SecActPy IO Module - Testing")
     print("=" * 60)
 
-    print("\nDependencies:")
+    print(f"\nDependencies:")
     print(f"  h5py available: {H5PY_AVAILABLE}")
     print(f"  anndata available: {ANNDATA_AVAILABLE}")
 
@@ -968,12 +982,12 @@ if __name__ == "__main__":
     n_samples = 100
 
     results = {
-        "beta": np.random.randn(n_features, n_samples),
-        "se": np.abs(np.random.randn(n_features, n_samples)),
-        "zscore": np.random.randn(n_features, n_samples),
-        "pvalue": np.random.uniform(0, 1, (n_features, n_samples)),
-        "feature_names": [f"Protein_{i}" for i in range(n_features)],
-        "sample_names": [f"Sample_{i}" for i in range(n_samples)],
+        'beta': np.random.randn(n_features, n_samples),
+        'se': np.abs(np.random.randn(n_features, n_samples)),
+        'zscore': np.random.randn(n_features, n_samples),
+        'pvalue': np.random.uniform(0, 1, (n_features, n_samples)),
+        'feature_names': [f"Protein_{i}" for i in range(n_features)],
+        'sample_names': [f"Sample_{i}" for i in range(n_samples)]
     }
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -984,12 +998,12 @@ if __name__ == "__main__":
 
         loaded = load_results(h5_path)
 
-        if np.allclose(loaded["beta"], results["beta"]):
+        if np.allclose(loaded['beta'], results['beta']):
             print("   ✓ HDF5 round-trip successful")
         else:
             print("   ✗ HDF5 data mismatch!")
 
-        if loaded["feature_names"] == results["feature_names"]:
+        if loaded['feature_names'] == results['feature_names']:
             print("   ✓ Feature names preserved")
         else:
             print("   ✗ Feature names mismatch!")
@@ -1027,10 +1041,10 @@ if __name__ == "__main__":
         # Test 5: CSV export
         print("\n5. Testing CSV export...")
         csv_path = os.path.join(tmpdir, "test_results.csv")
-        save_results(results, csv_path, format="csv")
+        save_results(results, csv_path, format='csv')
 
         # Check files exist
-        csv_files = [f for f in os.listdir(tmpdir) if f.endswith(".csv")]
+        csv_files = [f for f in os.listdir(tmpdir) if f.endswith('.csv')]
         print(f"   Created {len(csv_files)} CSV files: {csv_files[:2]}...")
 
         # Test 6: Lazy loading
@@ -1039,32 +1053,20 @@ if __name__ == "__main__":
         print(f"   Beta type: {type(lazy_results['beta'])}")
 
         # Access a slice
-        slice_data = lazy_results["beta"][:, :10]
+        slice_data = lazy_results['beta'][:, :10]
         print(f"   Slice shape: {slice_data.shape}")
 
         # Close file handle
-        lazy_results["_file"].close()
+        lazy_results['_file'].close()
         print("   ✓ Lazy loading works")
 
         # Test 7: Concatenation
         print("\n7. Testing concatenation...")
         # Create two result files
-        results1 = {
-            k: v[:, :50]
-            if isinstance(v, np.ndarray)
-            else v[:50]
-            if isinstance(v, list) and k == "sample_names"
-            else v
-            for k, v in results.items()
-        }
-        results2 = {
-            k: v[:, 50:]
-            if isinstance(v, np.ndarray)
-            else v[50:]
-            if isinstance(v, list) and k == "sample_names"
-            else v
-            for k, v in results.items()
-        }
+        results1 = {k: v[:, :50] if isinstance(v, np.ndarray) else v[:50] if isinstance(v, list) and k == 'sample_names' else v
+                    for k, v in results.items()}
+        results2 = {k: v[:, 50:] if isinstance(v, np.ndarray) else v[50:] if isinstance(v, list) and k == 'sample_names' else v
+                    for k, v in results.items()}
 
         path1 = os.path.join(tmpdir, "results_part1.h5")
         path2 = os.path.join(tmpdir, "results_part2.h5")
@@ -1074,7 +1076,7 @@ if __name__ == "__main__":
         concatenated = concatenate_results([path1, path2])
         print(f"   Concatenated shape: {concatenated['beta'].shape}")
 
-        if concatenated["beta"].shape == (n_features, n_samples):
+        if concatenated['beta'].shape == (n_features, n_samples):
             print("   ✓ Concatenation works")
         else:
             print("   ✗ Concatenation shape mismatch!")

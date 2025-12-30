@@ -30,27 +30,25 @@ Usage:
     >>> ridge_batch(X, Y, batch_size=5000, output_path="results.h5ad")
 """
 
-import gc
-import math
-import time
-import warnings
-from dataclasses import dataclass
-from typing import Any, Callable, Literal, Optional, Union
-
 import numpy as np
 from scipy import linalg
 from scipy import sparse as sps
+from typing import Optional, Literal, Any, Callable, Union
+from dataclasses import dataclass
+import time
+import warnings
+import gc
+import math
 
-from .ridge import CUPY_AVAILABLE, DEFAULT_LAMBDA, DEFAULT_NRAND, DEFAULT_SEED, EPS
 from .rng import (
     GSLRNG,
     get_cached_inverse_perm_table,
 )
+from .ridge import CUPY_AVAILABLE, EPS, DEFAULT_LAMBDA, DEFAULT_NRAND, DEFAULT_SEED
 
 # Try to import h5py for streaming output
 try:
     import h5py
-
     H5PY_AVAILABLE = True
 except ImportError:
     H5PY_AVAILABLE = False
@@ -64,16 +62,16 @@ if CUPY_AVAILABLE:
         pass
 
 __all__ = [
-    "ridge_batch",
-    "estimate_batch_size",
-    "estimate_memory",
-    "StreamingResultWriter",
+    'ridge_batch',
+    'estimate_batch_size',
+    'estimate_memory',
+    'StreamingResultWriter',
     # Sparse-preserving batch processing
-    "PopulationStats",
-    "ProjectionComponents",
-    "precompute_population_stats",
-    "precompute_projection_components",
-    "ridge_batch_sparse_preserving",
+    'PopulationStats',
+    'ProjectionComponents',
+    'precompute_population_stats',
+    'precompute_projection_components',
+    'ridge_batch_sparse_preserving',
 ]
 
 
@@ -81,14 +79,13 @@ __all__ = [
 # Memory Estimation
 # =============================================================================
 
-
 def estimate_memory(
     n_genes: int,
     n_features: int,
     n_samples: int,
     n_rand: int = 1000,
     batch_size: Optional[int] = None,
-    include_gpu: bool = False,
+    include_gpu: bool = False
 ) -> dict[str, float]:
     """
     Estimate memory requirements for ridge regression.
@@ -146,22 +143,21 @@ def estimate_memory(
     # Beta batch: (n_features, batch_size)
     beta_batch_bytes = n_features * batch_size * bytes_per_float
 
-    def to_gb(x):
-        return x / (1024**3)
+    to_gb = lambda x: x / (1024 ** 3)
 
     estimates = {
-        "T_matrix": to_gb(T_bytes),
-        "Y_data": to_gb(Y_bytes),
-        "results": to_gb(results_bytes),
-        "working": to_gb(working_bytes + perm_bytes),
-        "per_batch": to_gb(Y_batch_bytes + beta_batch_bytes + working_bytes),
-        "total": to_gb(T_bytes + Y_bytes + results_bytes + working_bytes + perm_bytes),
+        'T_matrix': to_gb(T_bytes),
+        'Y_data': to_gb(Y_bytes),
+        'results': to_gb(results_bytes),
+        'working': to_gb(working_bytes + perm_bytes),
+        'per_batch': to_gb(Y_batch_bytes + beta_batch_bytes + working_bytes),
+        'total': to_gb(T_bytes + Y_bytes + results_bytes + working_bytes + perm_bytes)
     }
 
     if include_gpu:
         # GPU needs T + Y_batch + working arrays
         gpu_bytes = T_bytes + Y_batch_bytes + working_bytes + beta_batch_bytes
-        estimates["gpu_per_batch"] = to_gb(gpu_bytes)
+        estimates['gpu_per_batch'] = to_gb(gpu_bytes)
 
     return estimates
 
@@ -173,7 +169,7 @@ def estimate_batch_size(
     n_rand: int = 1000,
     safety_factor: float = 0.7,
     min_batch: int = 100,
-    max_batch: int = 50000,
+    max_batch: int = 50000
 ) -> int:
     """
     Estimate optimal batch size given available memory.
@@ -201,7 +197,7 @@ def estimate_batch_size(
         Recommended batch size.
     """
     bytes_per_float = 8
-    available_bytes = available_gb * (1024**3) * safety_factor
+    available_bytes = available_gb * (1024 ** 3) * safety_factor
 
     # Fixed costs: T matrix + permutation table
     T_bytes = n_features * n_genes * bytes_per_float
@@ -220,8 +216,8 @@ def estimate_batch_size(
 
     # Per-sample cost: Y column + working arrays
     per_sample_bytes = (
-        n_genes * bytes_per_float  # Y column
-        + 4 * n_features * bytes_per_float  # result arrays
+        n_genes * bytes_per_float +           # Y column
+        4 * n_features * bytes_per_float      # result arrays
     )
 
     # Estimate batch size
@@ -234,7 +230,6 @@ def estimate_batch_size(
 # =============================================================================
 # Streaming Result Writer
 # =============================================================================
-
 
 class StreamingResultWriter:
     """
@@ -272,7 +267,7 @@ class StreamingResultWriter:
         n_samples: int,
         feature_names: Optional[list] = None,
         sample_names: Optional[list] = None,
-        compression: Optional[str] = "gzip",
+        compression: Optional[str] = "gzip"
     ):
         if not H5PY_AVAILABLE:
             raise ImportError("h5py required for streaming output. Install with: pip install h5py")
@@ -284,27 +279,35 @@ class StreamingResultWriter:
         self._closed = False
 
         # Create HDF5 file
-        self._file = h5py.File(path, "w")
+        self._file = h5py.File(path, 'w')
 
         # Create datasets
         shape = (n_features, n_samples)
         chunks = (n_features, min(1000, n_samples))  # Chunk by columns
 
         self._datasets = {}
-        for name in ["beta", "se", "zscore", "pvalue"]:
+        for name in ['beta', 'se', 'zscore', 'pvalue']:
             self._datasets[name] = self._file.create_dataset(
-                name, shape=shape, dtype="float64", chunks=chunks, compression=compression
+                name,
+                shape=shape,
+                dtype='float64',
+                chunks=chunks,
+                compression=compression
             )
 
         # Store names as attributes
         if feature_names is not None:
-            self._file.attrs["feature_names"] = np.array(feature_names, dtype="S")
+            self._file.attrs['feature_names'] = np.array(feature_names, dtype='S')
         if sample_names is not None:
-            self._file.attrs["sample_names"] = np.array(sample_names, dtype="S")
+            self._file.attrs['sample_names'] = np.array(sample_names, dtype='S')
 
         self._samples_written = 0
 
-    def write_batch(self, result: dict[str, np.ndarray], start_col: Optional[int] = None) -> None:
+    def write_batch(
+        self,
+        result: dict[str, np.ndarray],
+        start_col: Optional[int] = None
+    ) -> None:
         """
         Write a batch of results.
 
@@ -321,13 +324,15 @@ class StreamingResultWriter:
         if start_col is None:
             start_col = self._samples_written
 
-        batch_size = result["beta"].shape[1]
+        batch_size = result['beta'].shape[1]
         end_col = start_col + batch_size
 
         if end_col > self.n_samples:
-            raise ValueError(f"Batch would exceed dataset size: {end_col} > {self.n_samples}")
+            raise ValueError(
+                f"Batch would exceed dataset size: {end_col} > {self.n_samples}"
+            )
 
-        for name in ["beta", "se", "zscore", "pvalue"]:
+        for name in ['beta', 'se', 'zscore', 'pvalue']:
             self._datasets[name][:, start_col:end_col] = result[name]
 
         self._samples_written = max(self._samples_written, end_col)
@@ -349,7 +354,6 @@ class StreamingResultWriter:
 # =============================================================================
 # Core Batch Functions
 # =============================================================================
-
 
 def _compute_T_numpy(X: np.ndarray, lambda_: float) -> np.ndarray:
     """Compute projection matrix T = (X'X + λI)^{-1} X' using NumPy."""
@@ -388,7 +392,10 @@ def _compute_T_cupy(X_gpu, lambda_: float):
 
 
 def _process_batch_numpy(
-    T: np.ndarray, Y_batch: np.ndarray, inv_perm_table: np.ndarray, n_rand: int
+    T: np.ndarray,
+    Y_batch: np.ndarray,
+    inv_perm_table: np.ndarray,
+    n_rand: int
 ) -> dict[str, np.ndarray]:
     """
     Process a single batch using NumPy with T-column permutation.
@@ -420,20 +427,23 @@ def _process_batch_numpy(
 
         pvalue_counts += (np.abs(beta_perm) >= abs_beta).astype(np.float64)
         aver += beta_perm
-        aver_sq += beta_perm**2
+        aver_sq += beta_perm ** 2
 
     # Finalize statistics
     mean = aver / n_rand
-    var = (aver_sq / n_rand) - (mean**2)
+    var = (aver_sq / n_rand) - (mean ** 2)
     se = np.sqrt(np.maximum(var, 0.0))
     zscore = np.where(se > EPS, (beta - mean) / se, 0.0)
     pvalue = (pvalue_counts + 1.0) / (n_rand + 1.0)
 
-    return {"beta": beta, "se": se, "zscore": zscore, "pvalue": pvalue}
+    return {'beta': beta, 'se': se, 'zscore': zscore, 'pvalue': pvalue}
 
 
 def _process_batch_cupy(
-    T_gpu, Y_batch: np.ndarray, inv_perm_table: np.ndarray, n_rand: int
+    T_gpu,
+    Y_batch: np.ndarray,
+    inv_perm_table: np.ndarray,
+    n_rand: int
 ) -> dict[str, np.ndarray]:
     """
     Process a single batch using CuPy with T-column permutation.
@@ -466,23 +476,23 @@ def _process_batch_cupy(
 
         pvalue_counts += (cp.abs(beta_perm) >= abs_beta).astype(cp.float64)
         aver += beta_perm
-        aver_sq += beta_perm**2
+        aver_sq += beta_perm ** 2
 
         del inv_perm_gpu, T_perm, beta_perm
 
     # Finalize statistics
     mean = aver / n_rand
-    var = (aver_sq / n_rand) - (mean**2)
+    var = (aver_sq / n_rand) - (mean ** 2)
     se_gpu = cp.sqrt(cp.maximum(var, 0.0))
     zscore_gpu = cp.where(se_gpu > EPS, (beta_gpu - mean) / se_gpu, 0.0)
     pvalue_gpu = (pvalue_counts + 1.0) / (n_rand + 1.0)
 
     # Transfer back to CPU
     result = {
-        "beta": cp.asnumpy(beta_gpu),
-        "se": cp.asnumpy(se_gpu),
-        "zscore": cp.asnumpy(zscore_gpu),
-        "pvalue": cp.asnumpy(pvalue_gpu),
+        'beta': cp.asnumpy(beta_gpu),
+        'se': cp.asnumpy(se_gpu),
+        'zscore': cp.asnumpy(zscore_gpu),
+        'pvalue': cp.asnumpy(pvalue_gpu)
     }
 
     # Cleanup GPU memory
@@ -497,7 +507,6 @@ def _process_batch_cupy(
 # Main Batch Function
 # =============================================================================
 
-
 def ridge_batch(
     X: np.ndarray,
     Y: np.ndarray,
@@ -511,7 +520,7 @@ def ridge_batch(
     feature_names: Optional[list] = None,
     sample_names: Optional[list] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
-    verbose: bool = False,
+    verbose: bool = False
 ) -> Optional[dict[str, Any]]:
     """
     Ridge regression with batch processing for large datasets.
@@ -599,13 +608,11 @@ def ridge_batch(
     n_batches = math.ceil(n_samples / batch_size)
 
     if verbose:
-        print("Ridge batch processing:")
+        print(f"Ridge batch processing:")
         print(f"  Data: {n_genes} genes, {n_features} features, {n_samples} samples")
         print(f"  Batches: {n_batches} (size={batch_size})")
         mem = estimate_memory(n_genes, n_features, n_samples, n_rand, batch_size)
-        print(
-            f"  Estimated memory: {mem['total']:.2f} GB total, {mem['per_batch']:.3f} GB per batch"
-        )
+        print(f"  Estimated memory: {mem['total']:.2f} GB total, {mem['per_batch']:.3f} GB per batch")
 
     # --- Backend Selection ---
     if backend == "auto":
@@ -613,7 +620,7 @@ def ridge_batch(
     elif backend == "cupy" and not CUPY_AVAILABLE:
         raise ImportError("CuPy backend requested but not available")
 
-    use_gpu = backend == "cupy"
+    use_gpu = (backend == "cupy")
 
     if verbose:
         print(f"  Backend: {backend}")
@@ -628,7 +635,7 @@ def ridge_batch(
             n_features=n_features,
             n_samples=n_samples,
             feature_names=feature_names,
-            sample_names=sample_names,
+            sample_names=sample_names
         )
 
     # --- Compute T Matrix (once) ---
@@ -689,9 +696,7 @@ def ridge_batch(
 
         if verbose:
             batch_time = time.time() - batch_start
-            print(
-                f"    Batch {batch_idx + 1}/{n_batches}: {end_col - start_col} samples in {batch_time:.2f}s"
-            )
+            print(f"    Batch {batch_idx + 1}/{n_batches}: {end_col - start_col} samples in {batch_time:.2f}s")
 
         # Cleanup
         del Y_batch, batch_result
@@ -718,13 +723,13 @@ def ridge_batch(
         print("  Concatenating results...")
 
     final_result = {
-        "beta": np.hstack([r["beta"] for r in results_list]),
-        "se": np.hstack([r["se"] for r in results_list]),
-        "zscore": np.hstack([r["zscore"] for r in results_list]),
-        "pvalue": np.hstack([r["pvalue"] for r in results_list]),
-        "method": f"{backend}_batch",
-        "time": total_time,
-        "n_batches": n_batches,
+        'beta': np.hstack([r['beta'] for r in results_list]),
+        'se': np.hstack([r['se'] for r in results_list]),
+        'zscore': np.hstack([r['zscore'] for r in results_list]),
+        'pvalue': np.hstack([r['pvalue'] for r in results_list]),
+        'method': f"{backend}_batch",
+        'time': total_time,
+        'n_batches': n_batches
     }
 
     if verbose:
@@ -736,7 +741,6 @@ def ridge_batch(
 # =============================================================================
 # Sparse-Preserving Batch Processing
 # =============================================================================
-
 
 @dataclass
 class PopulationStats:
@@ -757,14 +761,13 @@ class PopulationStats:
     n_genes : int
         Number of genes (rows of Y).
     """
-
     mu: np.ndarray
     sigma: np.ndarray
     mu_over_sigma: np.ndarray
     n_genes: int
 
     @classmethod
-    def from_dense(cls, Y: np.ndarray, ddof: int = 1) -> "PopulationStats":
+    def from_dense(cls, Y: np.ndarray, ddof: int = 1) -> 'PopulationStats':
         """Compute statistics from dense matrix."""
         mu = Y.mean(axis=0)
         sigma = Y.std(axis=0, ddof=ddof)
@@ -773,7 +776,7 @@ class PopulationStats:
         return cls(mu=mu, sigma=sigma, mu_over_sigma=mu_over_sigma, n_genes=Y.shape[0])
 
     @classmethod
-    def from_sparse(cls, Y: sps.spmatrix, ddof: int = 1) -> "PopulationStats":
+    def from_sparse(cls, Y: sps.spmatrix, ddof: int = 1) -> 'PopulationStats':
         """Compute statistics from sparse matrix efficiently."""
         n_genes = Y.shape[0]
 
@@ -814,7 +817,6 @@ class ProjectionComponents:
     n_genes : int
         Number of genes.
     """
-
     T: np.ndarray
     c: np.ndarray
     lambda_: float
@@ -842,7 +844,8 @@ class ProjectionComponents:
 
 
 def precompute_population_stats(
-    Y: Union[np.ndarray, sps.spmatrix], ddof: int = 1
+    Y: Union[np.ndarray, sps.spmatrix],
+    ddof: int = 1
 ) -> PopulationStats:
     """
     Precompute population statistics from Y.
@@ -875,7 +878,8 @@ def precompute_population_stats(
 
 
 def precompute_projection_components(
-    X: np.ndarray, lambda_: float = DEFAULT_LAMBDA
+    X: np.ndarray,
+    lambda_: float = DEFAULT_LAMBDA
 ) -> ProjectionComponents:
     """
     Precompute projection matrix components from signature matrix.
@@ -921,7 +925,13 @@ def precompute_projection_components(
     # c = T @ ones (row sums)
     c = T.sum(axis=1)
 
-    return ProjectionComponents(T=T, c=c, lambda_=lambda_, n_features=n_features, n_genes=n_genes)
+    return ProjectionComponents(
+        T=T,
+        c=c,
+        lambda_=lambda_,
+        n_features=n_features,
+        n_genes=n_genes
+    )
 
 
 def ridge_batch_sparse_preserving(
@@ -932,7 +942,7 @@ def ridge_batch_sparse_preserving(
     seed: int = DEFAULT_SEED,
     use_cache: bool = False,
     backend: Literal["auto", "numpy", "cupy"] = "auto",
-    verbose: bool = False,
+    verbose: bool = False
 ) -> dict[str, np.ndarray]:
     """
     Sparse-preserving ridge inference for a batch of samples.
@@ -998,7 +1008,7 @@ def ridge_batch_sparse_preserving(
         warnings.warn("CuPy not available, falling back to NumPy")
         backend = "numpy"
 
-    use_gpu = backend == "cupy"
+    use_gpu = (backend == "cupy")
 
     T = proj.T
     c = proj.c
@@ -1054,10 +1064,10 @@ def ridge_batch_sparse_preserving(
     # --- Permutation testing ---
     if n_rand == 0:
         return {
-            "beta": beta,
-            "se": np.zeros_like(beta),
-            "zscore": np.zeros_like(beta),
-            "pvalue": np.ones_like(beta),
+            'beta': beta,
+            'se': np.zeros_like(beta),
+            'zscore': np.zeros_like(beta),
+            'pvalue': np.ones_like(beta)
         }
 
     if verbose:
@@ -1065,7 +1075,9 @@ def ridge_batch_sparse_preserving(
 
     # Get inverse permutation table
     if use_cache:
-        inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=verbose)
+        inv_perm_table = get_cached_inverse_perm_table(
+            n_genes, n_rand, seed, verbose=verbose
+        )
     else:
         rng = GSLRNG(seed)
         inv_perm_table = rng.inverse_permutation_table(n_genes, n_rand)
@@ -1097,19 +1109,24 @@ def ridge_batch_sparse_preserving(
         # Accumulate statistics
         pvalue_counts += (np.abs(beta_perm) >= abs_beta).astype(np.float64)
         aver += beta_perm
-        aver_sq += beta_perm**2
+        aver_sq += beta_perm ** 2
 
     # --- Finalize statistics ---
     if verbose:
         print("  Finalizing statistics...")
 
     mean = aver / n_rand
-    var = (aver_sq / n_rand) - (mean**2)
+    var = (aver_sq / n_rand) - (mean ** 2)
     se = np.sqrt(np.maximum(var, 0.0))
     zscore = np.where(se > EPS, (beta - mean) / se, 0.0)
     pvalue = (pvalue_counts + 1.0) / (n_rand + 1.0)
 
-    return {"beta": beta, "se": se, "zscore": zscore, "pvalue": pvalue}
+    return {
+        'beta': beta,
+        'se': se,
+        'zscore': zscore,
+        'pvalue': pvalue
+    }
 
 
 def _ridge_batch_sparse_preserving_gpu(
@@ -1122,7 +1139,7 @@ def _ridge_batch_sparse_preserving_gpu(
     seed: int,
     use_cache: bool,
     is_sparse: bool,
-    verbose: bool,
+    verbose: bool
 ) -> dict[str, np.ndarray]:
     """GPU implementation of sparse-preserving ridge batch processing."""
     if cp is None:
@@ -1132,7 +1149,7 @@ def _ridge_batch_sparse_preserving_gpu(
     n_samples = Y.shape[1]
 
     if verbose:
-        print("  Transferring data to GPU...")
+        print(f"  Transferring data to GPU...")
 
     # Transfer to GPU
     T_gpu = cp.asarray(T, dtype=cp.float64)
@@ -1160,10 +1177,10 @@ def _ridge_batch_sparse_preserving_gpu(
     if n_rand == 0:
         beta = cp.asnumpy(beta_gpu)
         return {
-            "beta": beta,
-            "se": np.zeros_like(beta),
-            "zscore": np.zeros_like(beta),
-            "pvalue": np.ones_like(beta),
+            'beta': beta,
+            'se': np.zeros_like(beta),
+            'zscore': np.zeros_like(beta),
+            'pvalue': np.ones_like(beta)
         }
 
     if verbose:
@@ -1171,7 +1188,9 @@ def _ridge_batch_sparse_preserving_gpu(
 
     # Get inverse permutation table (on CPU)
     if use_cache:
-        inv_perm_table = get_cached_inverse_perm_table(n_genes, n_rand, seed, verbose=verbose)
+        inv_perm_table = get_cached_inverse_perm_table(
+            n_genes, n_rand, seed, verbose=verbose
+        )
     else:
         rng = GSLRNG(seed)
         inv_perm_table = rng.inverse_permutation_table(n_genes, n_rand)
@@ -1201,14 +1220,14 @@ def _ridge_batch_sparse_preserving_gpu(
         # Accumulate statistics
         pvalue_counts_gpu += (cp.abs(beta_perm_gpu) >= abs_beta_gpu).astype(cp.float64)
         aver_gpu += beta_perm_gpu
-        aver_sq_gpu += beta_perm_gpu**2
+        aver_sq_gpu += beta_perm_gpu ** 2
 
     # --- Finalize statistics on GPU ---
     if verbose:
         print("  Finalizing statistics on GPU...")
 
     mean_gpu = aver_gpu / n_rand
-    var_gpu = (aver_sq_gpu / n_rand) - (mean_gpu**2)
+    var_gpu = (aver_sq_gpu / n_rand) - (mean_gpu ** 2)
     se_gpu = cp.sqrt(cp.maximum(var_gpu, 0.0))
     zscore_gpu = cp.where(se_gpu > EPS, (beta_gpu - mean_gpu) / se_gpu, 0.0)
     pvalue_gpu = (pvalue_counts_gpu + 1.0) / (n_rand + 1.0)
@@ -1218,10 +1237,10 @@ def _ridge_batch_sparse_preserving_gpu(
         print("  Transferring results to CPU...")
 
     result = {
-        "beta": cp.asnumpy(beta_gpu),
-        "se": cp.asnumpy(se_gpu),
-        "zscore": cp.asnumpy(zscore_gpu),
-        "pvalue": cp.asnumpy(pvalue_gpu),
+        'beta': cp.asnumpy(beta_gpu),
+        'se': cp.asnumpy(se_gpu),
+        'zscore': cp.asnumpy(zscore_gpu),
+        'pvalue': cp.asnumpy(pvalue_gpu)
     }
 
     # Cleanup GPU memory
@@ -1274,17 +1293,16 @@ if __name__ == "__main__":
     # Test 3: Basic batch processing
     print("\n3. Testing batch processing (NumPy)...")
     result = ridge_batch(
-        X,
-        Y,
+        X, Y,
         lambda_=5e5,
         n_rand=n_rand,
         seed=0,
         batch_size=batch_size,
-        backend="numpy",
-        verbose=True,
+        backend='numpy',
+        verbose=True
     )
 
-    print("\n   Results:")
+    print(f"\n   Results:")
     print(f"   - beta shape: {result['beta'].shape}")
     print(f"   - pvalue range: [{result['pvalue'].min():.4f}, {result['pvalue'].max():.4f}]")
     print(f"   - n_batches: {result['n_batches']}")
@@ -1292,11 +1310,10 @@ if __name__ == "__main__":
     # Test 4: Compare with non-batch ridge
     print("\n4. Verifying consistency with standard ridge...")
     from secactpy.ridge import ridge
+    result_standard = ridge(X, Y, lambda_=5e5, n_rand=n_rand, seed=0, backend='numpy')
 
-    result_standard = ridge(X, Y, lambda_=5e5, n_rand=n_rand, seed=0, backend="numpy")
-
-    beta_match = np.allclose(result["beta"], result_standard["beta"], rtol=1e-10)
-    pval_match = np.allclose(result["pvalue"], result_standard["pvalue"], rtol=1e-10)
+    beta_match = np.allclose(result['beta'], result_standard['beta'], rtol=1e-10)
+    pval_match = np.allclose(result['pvalue'], result_standard['pvalue'], rtol=1e-10)
 
     if beta_match and pval_match:
         print("   ✓ Batch results match standard ridge exactly")
@@ -1308,42 +1325,39 @@ if __name__ == "__main__":
     # Test 5: Progress callback
     print("\n5. Testing progress callback...")
     progress_calls = []
-
     def track_progress(i, n):
         progress_calls.append((i, n))
 
-    _ = ridge_batch(
-        X, Y, n_rand=n_rand, batch_size=batch_size, progress_callback=track_progress, verbose=False
-    )
+    _ = ridge_batch(X, Y, n_rand=n_rand, batch_size=batch_size,
+                    progress_callback=track_progress, verbose=False)
     print(f"   Progress callback called {len(progress_calls)} times")
 
     # Test 6: Streaming output (if h5py available)
     print(f"\n6. Testing streaming output (h5py available: {H5PY_AVAILABLE})...")
     if H5PY_AVAILABLE:
-        import os
         import tempfile
+        import os
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, "test_results.h5")
 
             ridge_batch(
-                X,
-                Y,
+                X, Y,
                 n_rand=n_rand,
                 seed=0,
                 batch_size=batch_size,
                 output_path=output_path,
                 feature_names=[f"F{i}" for i in range(n_features)],
                 sample_names=[f"S{i}" for i in range(n_samples)],
-                verbose=True,
+                verbose=True
             )
 
             # Verify file
-            with h5py.File(output_path, "r") as f:
-                beta_streamed = f["beta"][:]
+            with h5py.File(output_path, 'r') as f:
+                beta_streamed = f['beta'][:]
                 print(f"   Streamed beta shape: {beta_streamed.shape}")
 
-                if np.allclose(beta_streamed, result["beta"], rtol=1e-10):
+                if np.allclose(beta_streamed, result['beta'], rtol=1e-10):
                     print("   ✓ Streamed results match in-memory results")
                 else:
                     print("   ✗ Streamed results differ!")
@@ -1354,10 +1368,15 @@ if __name__ == "__main__":
     print(f"\n7. Testing GPU backend (CuPy available: {CUPY_AVAILABLE})...")
     if CUPY_AVAILABLE:
         result_gpu = ridge_batch(
-            X, Y, n_rand=n_rand, seed=0, batch_size=batch_size, backend="cupy", verbose=True
+            X, Y,
+            n_rand=n_rand,
+            seed=0,
+            batch_size=batch_size,
+            backend='cupy',
+            verbose=True
         )
 
-        if np.allclose(result["beta"], result_gpu["beta"], rtol=1e-10):
+        if np.allclose(result['beta'], result_gpu['beta'], rtol=1e-10):
             print("   ✓ GPU results match CPU results")
         else:
             print("   ✗ GPU results differ!")
