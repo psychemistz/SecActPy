@@ -301,7 +301,7 @@ def _ridge_permutation_numpy(
     else:
         # Fast NumPy RNG (~70x faster, no caching needed)
         if verbose:
-            print(f"  Generating permutation table (fast NumPy RNG)...")
+            print("  Generating permutation table (fast NumPy RNG)...")
         inv_perm_table = generate_inverse_permutation_table_fast(n_genes, n_rand, seed)
 
     # Accumulators
@@ -370,7 +370,6 @@ def _ridge_ttest_numpy(
     Used when n_rand=0 for faster computation with parametric inference.
     """
     n_genes, n_features = X.shape
-    n_samples = Y.shape[1]
 
     # --- Step 1: Compute T = (X'X + λI)^{-1} X' ---
     if verbose:
@@ -535,7 +534,7 @@ def _ridge_cupy(
     else:
         # Fast NumPy RNG (~70x faster, no caching needed)
         if verbose:
-            print(f"  Generating permutation table (fast NumPy RNG)...")
+            print("  Generating permutation table (fast NumPy RNG)...")
         inv_perm_table = generate_inverse_permutation_table_fast(n_genes, n_rand, seed)
 
     # Accumulators on GPU

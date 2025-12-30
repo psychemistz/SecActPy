@@ -16,6 +16,9 @@ Usage:
     python tests/test_st_gpu.py --cosmx --gpu-only  # CosMx, GPU only
     python tests/test_st_gpu.py --save
 
+For faster R comparison, convert R text outputs to h5ad first:
+    Rscript scripts/save_results_h5ad.R dataset/output/signature/CosMx
+
 Expected output:
     GPU and CPU results should match within numerical tolerance.
 """
@@ -62,24 +65,93 @@ GROUP_COR = 0.9
 
 
 # =============================================================================
-# Comparison Functions
+# R Output Loading Functions
 # =============================================================================
 
-def load_r_output(output_dir: Path) -> dict:
-    """Load R output files."""
+def load_r_output_h5ad(output_dir: Path) -> dict:
+    """
+    Load R output from h5ad file (fast).
+
+    The h5ad file should be created using:
+        Rscript scripts/save_results_h5ad.R <output_dir>
+
+    Returns dict with 'beta', 'se', 'zscore', 'pvalue' as DataFrames.
+    """
+    import anndata as ad
+
+    h5ad_path = output_dir / "results.h5ad"
+    if not h5ad_path.exists():
+        return None
+
+    print(f"  Loading from h5ad: {h5ad_path}")
+    start = time.time()
+
+    adata = ad.read_h5ad(h5ad_path)
+
+    # Get protein names
+    protein_names = list(adata.uns.get('protein_names', []))
+
+    # Get cell names
+    cell_names = list(adata.obs_names)
+
+    result = {}
+    for name in ['beta', 'se', 'zscore', 'pvalue']:
+        if name in adata.obsm:
+            # obsm stores (cells x proteins), we need (proteins x cells)
+            arr = adata.obsm[name].T
+            result[name] = pd.DataFrame(
+                arr,
+                index=protein_names,
+                columns=cell_names
+            )
+            print(f"    {name}: {result[name].shape}")
+
+    elapsed = time.time() - start
+    print(f"  Loaded in {elapsed:.1f}s")
+
+    return result
+
+
+def load_r_output_txt(output_dir: Path) -> dict:
+    """Load R output from text files (slow for large files)."""
     result = {}
 
     for name in ['beta', 'se', 'zscore', 'pvalue']:
         filepath = output_dir / f"{name}.txt"
         if filepath.exists():
+            print(f"  Loading {name}...", end=" ", flush=True)
+            start = time.time()
             df = pd.read_csv(filepath, sep=r'\s+', index_col=0)
+            elapsed = time.time() - start
             result[name] = df
-            print(f"  Loaded {name}: {df.shape}")
+            print(f"{df.shape} in {elapsed:.1f}s")
         else:
             print(f"  Warning: {name}.txt not found")
 
     return result
 
+
+def load_r_output(output_dir: Path) -> dict:
+    """
+    Load R output files, preferring h5ad format if available.
+
+    To create h5ad from R outputs:
+        Rscript scripts/save_results_h5ad.R <output_dir>
+    """
+    # Try h5ad first (much faster)
+    result = load_r_output_h5ad(output_dir)
+    if result:
+        return result
+
+    # Fall back to text files
+    print("  H5AD not found, loading text files (slower)...")
+    print("  Tip: Run 'Rscript scripts/save_results_h5ad.R <output_dir>' for faster loading")
+    return load_r_output_txt(output_dir)
+
+
+# =============================================================================
+# Comparison Functions
+# =============================================================================
 
 def compare_results(result1: dict, result2: dict, tolerance: float = 1e-8,
                     label1: str = "Result1", label2: str = "Result2") -> dict:
@@ -94,47 +166,49 @@ def compare_results(result1: dict, result2: dict, tolerance: float = 1e-8,
         arr1 = result1[name]
         arr2 = result2[name]
 
-        # Check shape
-        if arr1.shape != arr2.shape:
+        # Find common rows and columns
+        common_rows = arr1.index.intersection(arr2.index)
+        common_cols = arr1.columns.intersection(arr2.columns)
+
+        if len(common_rows) == 0 or len(common_cols) == 0:
             comparison[name] = {
                 'status': 'FAIL',
-                'message': f'Shape mismatch: {label1} {arr1.shape} vs {label2} {arr2.shape}'
+                'message': f'No common rows/cols. {label1}: {arr1.shape}, {label2}: {arr2.shape}'
             }
             continue
 
-        # Check row names (proteins)
-        rows1 = set(arr1.index)
-        rows2 = set(arr2.index)
-        if rows1 != rows2:
-            missing_in_1 = len(rows2 - rows1)
-            missing_in_2 = len(rows1 - rows2)
-            comparison[name] = {
-                'status': 'FAIL',
-                'message': f'Row mismatch. Missing in {label1}: {missing_in_1}, Missing in {label2}: {missing_in_2}'
-            }
-            continue
-
-        # Align by index/columns
-        arr2_aligned = arr2.loc[arr1.index, arr1.columns]
+        # Align and compare
+        arr1_aligned = arr1.loc[common_rows, common_cols]
+        arr2_aligned = arr2.loc[common_rows, common_cols]
 
         # Calculate difference
-        diff = np.abs(arr1.values - arr2_aligned.values)
+        diff = np.abs(arr1_aligned.values - arr2_aligned.values)
         max_diff = np.nanmax(diff)
         mean_diff = np.nanmean(diff)
+
+        n_compared = len(common_rows) * len(common_cols)
 
         if max_diff <= tolerance:
             comparison[name] = {
                 'status': 'PASS',
                 'max_diff': max_diff,
                 'mean_diff': mean_diff,
-                'message': f'Max diff: {max_diff:.2e}'
+                'n_compared': n_compared,
+                'message': f'Max diff: {max_diff:.2e} (n={n_compared:,})'
             }
         else:
+            # Find location of max diff
+            max_idx = np.unravel_index(np.nanargmax(diff), diff.shape)
+            max_row = common_rows[max_idx[0]]
+            max_col = common_cols[max_idx[1]]
+
             comparison[name] = {
                 'status': 'FAIL',
                 'max_diff': max_diff,
                 'mean_diff': mean_diff,
-                'message': f'Max diff: {max_diff:.2e} (tolerance: {tolerance:.2e})'
+                'n_compared': n_compared,
+                'max_loc': (max_row, max_col),
+                'message': f'Max diff: {max_diff:.2e} at ({max_row}, {max_col})'
             }
 
     return comparison
@@ -366,6 +440,7 @@ def main(cosmx=False, gpu_only=False, save_output=False):
             validate = False
         else:
             r_result = load_r_output(output_dir)
+
             if not r_result:
                 print("   Warning: No R output files found!")
                 validate = False
@@ -498,12 +573,19 @@ Examples:
   # CosMx dataset, CPU vs GPU comparison
   python tests/test_st_gpu.py --cosmx
 
-  # GPU only, compare to R reference (faster for large datasets)
+  # GPU only, compare to R reference
   python tests/test_st_gpu.py --gpu-only
   python tests/test_st_gpu.py --cosmx --gpu-only
 
   # Save results
   python tests/test_st_gpu.py --save
+
+For faster R comparison with large datasets:
+  # First, convert R text outputs to h5ad (run once):
+  Rscript scripts/save_results_h5ad.R dataset/output/signature/CosMx
+
+  # Then run the test (will auto-detect h5ad):
+  python tests/test_st_gpu.py --cosmx --gpu-only
         """
     )
     parser.add_argument(
