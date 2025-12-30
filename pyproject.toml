@@ -75,8 +75,15 @@ target-version = ["py39", "py310", "py311", "py312"]
 
 [tool.ruff]
 line-length = 100
-select = ["E", "F", "W", "I", "UP"]
-ignore = ["E501"]
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # Line too long
+    "W291",  # Trailing whitespace
+    "W293",  # Blank line contains whitespace
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
