@@ -15,13 +15,14 @@
 version: '3.8'
 
 services:
-  # CPU version
+  # CPU version (Python only, fast build)
   secactpy:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         USE_GPU: "false"
+        INSTALL_R: "false"
     image: secactpy:latest
     container_name: secactpy
     volumes:
@@ -32,13 +33,14 @@ services:
     tty: true
     command: /bin/bash
 
-  # GPU version
+  # GPU version (Python only)
   secactpy-gpu:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         USE_GPU: "true"
+        INSTALL_R: "false"
     image: secactpy:gpu
     container_name: secactpy-gpu
     volumes:
@@ -63,7 +65,8 @@ services:
       dockerfile: Dockerfile
       args:
         USE_GPU: "false"
-    image: secactpy:latest
+        INSTALL_R: "false"
+    image: secactpy:jupyter
     container_name: secactpy-jupyter
     volumes:
       - ./:/workspace
@@ -80,7 +83,8 @@ services:
       dockerfile: Dockerfile
       args:
         USE_GPU: "true"
-    image: secactpy:gpu
+        INSTALL_R: "false"
+    image: secactpy:jupyter-gpu
     container_name: secactpy-jupyter-gpu
     volumes:
       - ./:/workspace

@@ -3,12 +3,15 @@
 # 
 # Single Dockerfile for both CPU and GPU versions
 #
-# Build CPU version (default):
+# Build CPU version (default, Python only):
 #   docker build -t secactpy:latest .
-#   docker build -t secactpy:cpu --build-arg USE_GPU=false .
 #
 # Build GPU version:
 #   docker build -t secactpy:gpu --build-arg USE_GPU=true .
+#
+# Build with R SecAct package (slower):
+#   docker build -t secactpy:with-r --build-arg INSTALL_R=true .
+#   docker build -t secactpy:gpu-with-r --build-arg USE_GPU=true --build-arg INSTALL_R=true .
 #
 # Run CPU:
 #   docker run -it --rm -v $(pwd):/workspace secactpy:latest
@@ -21,8 +24,9 @@
 #       jupyter lab --ip=0.0.0.0 --no-browser --allow-root
 # =============================================================================
 
-# Build argument: set to "true" for GPU support
+# Build arguments
 ARG USE_GPU=false
+ARG INSTALL_R=false
 
 # =============================================================================
 # Base Image Selection
@@ -33,8 +37,9 @@ FROM ubuntu:22.04 AS base-false
 # Select base image based on USE_GPU argument
 FROM base-${USE_GPU} AS base
 
-# Re-declare ARG after FROM (required by Docker)
+# Re-declare ARGs after FROM (required by Docker)
 ARG USE_GPU=false
+ARG INSTALL_R=false
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
@@ -44,9 +49,6 @@ ENV TZ=UTC
 # =============================================================================
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # R
-    r-base \
-    r-base-dev \
     # Python
     python3 \
     python3-dev \
@@ -72,18 +74,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     curl \
     vim \
+    software-properties-common \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
 # =============================================================================
-# R: Install SecAct
+# R: Install SecAct (optional)
 # =============================================================================
 
-RUN R -e "install.packages('remotes', repos='https://cloud.r-project.org/')" && \
-    R -e "remotes::install_github('data2intelligence/SecAct', dependencies=TRUE, upgrade='never')"
-
-# Verify R installation
-RUN R -e "library(SecAct); cat('SecAct version:', as.character(packageVersion('SecAct')), '\n')"
+ARG INSTALL_R
+RUN if [ "$INSTALL_R" = "true" ]; then \
+        echo "Installing R and SecAct..." && \
+        apt-get update && \
+        apt-get install -y --no-install-recommends r-base r-base-dev && \
+        rm -rf /var/lib/apt/lists/* && \
+        R -e "install.packages(c('remotes', 'BiocManager'), repos='https://cloud.r-project.org/')" && \
+        R -e "BiocManager::install(c('Biobase'), ask=FALSE, update=FALSE)" && \
+        R -e "options(timeout=600); remotes::install_github('data2intelligence/SecAct', dependencies=TRUE, upgrade='never')" && \
+        R -e "library(SecAct); cat('SecAct installed successfully\n')"; \
+    else \
+        echo "Skipping R installation"; \
+    fi
 
 # =============================================================================
 # Python: Install SecActPy
@@ -94,19 +105,19 @@ RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 
 # Install base Python packages
 RUN pip3 install --no-cache-dir \
-    numpy>=1.20.0 \
-    pandas>=1.3.0 \
-    scipy>=1.7.0 \
-    h5py>=3.0.0 \
-    anndata>=0.8.0 \
-    scanpy>=1.9.0 \
+    numpy \
+    pandas \
+    scipy \
+    h5py \
+    anndata \
+    scanpy \
     matplotlib \
     seaborn \
     jupyter \
     jupyterlab
 
 # Install CuPy for GPU version only
-ARG USE_GPU=false
+ARG USE_GPU
 RUN if [ "$USE_GPU" = "true" ]; then \
         echo "Installing CuPy for GPU support..." && \
         pip3 install --no-cache-dir cupy-cuda11x; \

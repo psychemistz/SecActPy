@@ -7,12 +7,25 @@ This guide explains how to use SecActPy with Docker, including both CPU and GPU 
 ### Build Images
 
 ```bash
-# CPU version (default)
+# CPU version (default, Python only - fast build)
 docker build -t secactpy:latest .
 
-# GPU version
+# CPU version with R SecAct package (slower)
+docker build -t secactpy:with-r --build-arg INSTALL_R=true .
+
+# GPU version (Python only)
 docker build -t secactpy:gpu --build-arg USE_GPU=true .
+
+# GPU version with R SecAct package
+docker build -t secactpy:gpu-with-r --build-arg USE_GPU=true --build-arg INSTALL_R=true .
 ```
+
+### Build Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `USE_GPU` | `false` | Set to `true` for GPU/CUDA support |
+| `INSTALL_R` | `false` | Set to `true` to include R and SecAct package |
 
 ### Run Containers
 
@@ -26,7 +39,7 @@ docker run -it --rm --gpus all -v $(pwd):/workspace secactpy:gpu
 # Run a Python script
 docker run --rm -v $(pwd):/workspace secactpy:latest python your_script.py
 
-# Run an R script
+# Run an R script (if R installed)
 docker run --rm -v $(pwd):/workspace secactpy:latest Rscript your_script.R
 ```
 
@@ -62,17 +75,17 @@ docker-compose up secactpy-jupyter-gpu
 
 ## What's Included
 
-### R Packages
-- **SecAct**: Original R implementation
-- Dependencies: Biobase, preprocessCore, etc.
-
-### Python Packages
+### Python Packages (always installed)
 - **SecActPy**: Python implementation
 - **NumPy, Pandas, SciPy**: Core scientific computing
 - **AnnData, Scanpy**: Single-cell analysis
 - **h5py**: HDF5 file support
 - **Jupyter**: Interactive notebooks
 - **CuPy** (GPU version only): GPU acceleration
+
+### R Packages (when INSTALL_R=true)
+- **SecAct**: Original R implementation
+- **Biobase**: Bioconductor dependency
 
 ## Validation Example
 
@@ -181,16 +194,19 @@ print(f'CUDA version: {cp.cuda.runtime.runtimeGetVersion()}')
 
 ### Build Arguments
 
-The unified Dockerfile supports the following build argument:
+The unified Dockerfile supports the following build arguments:
 
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `USE_GPU` | `false` | Set to `true` for GPU support |
+| `INSTALL_R` | `true` | Set to `false` to skip R/SecAct (faster build) |
 
 ```bash
 # Examples
-docker build -t secactpy:cpu --build-arg USE_GPU=false .
-docker build -t secactpy:gpu --build-arg USE_GPU=true .
+docker build -t secactpy:cpu .                                              # CPU, Python only (fast)
+docker build -t secactpy:cpu-with-r --build-arg INSTALL_R=true .            # CPU, with R
+docker build -t secactpy:gpu --build-arg USE_GPU=true .                     # GPU, Python only
+docker build -t secactpy:gpu-with-r --build-arg USE_GPU=true --build-arg INSTALL_R=true .  # GPU, with R
 ```
 
 ### Add Your Own Packages
@@ -200,8 +216,8 @@ Create a custom Dockerfile:
 ```dockerfile
 FROM secactpy:latest
 
-# Add R packages
-RUN R -e "install.packages('your_package', repos='https://cloud.r-project.org/')"
+# Add R packages (if R is installed)
+RUN R -e "install.packages('your_package', repos='https://cloud.r-project.org/')" || true
 
 # Add Python packages
 RUN pip3 install your_package
@@ -250,20 +266,24 @@ which nvidia-container-toolkit
 
 | Build | Base Image | Approximate Size |
 |-------|------------|-----------------|
-| CPU (`USE_GPU=false`) | ubuntu:22.04 | ~3 GB |
-| GPU (`USE_GPU=true`) | nvidia/cuda:11.8.0 | ~8 GB |
+| CPU, no R | ubuntu:22.04 | ~2 GB |
+| CPU, with R | ubuntu:22.04 | ~3.5 GB |
+| GPU, no R | nvidia/cuda:11.8.0 | ~6 GB |
+| GPU, with R | nvidia/cuda:11.8.0 | ~8 GB |
+
+> **Note**: CI/CD builds use `INSTALL_R=false` for faster builds. For local builds with R validation, use `--build-arg INSTALL_R=true`.
 
 ## Pushing to Docker Hub
 
 ```bash
 # Tag
-docker tag secactpy:latest psychemistz/secactpy:latest
-docker tag secactpy:gpu psychemistz/secactpy:gpu
+docker tag secactpy:latest yourusername/secactpy:latest
+docker tag secactpy:gpu yourusername/secactpy:gpu
 
 # Login
 docker login
 
 # Push
-docker push psychemistz/secactpy:latest
-docker push psychemistz/secactpy:gpu
+docker push yourusername/secactpy:latest
+docker push yourusername/secactpy:gpu
 ```
