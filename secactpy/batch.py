@@ -1229,7 +1229,7 @@ def _ridge_batch_sparse_preserving_gpu(
     mean_gpu = aver_gpu / n_rand
     var_gpu = (aver_sq_gpu / n_rand) - (mean_gpu ** 2)
     se_gpu = cp.sqrt(cp.maximum(var_gpu, 0.0))
-    zscore_gpu = cp.where(se_gpu > EPS, (beta_gpu - mean_gpu) / se_gpu, 0.0)
+    zscore_gpu = cp.where(se_gpu > EPS, (beta_gpu - mean) / se_gpu, 0.0)
     pvalue_gpu = (pvalue_counts_gpu + 1.0) / (n_rand + 1.0)
 
     # Transfer results to CPU

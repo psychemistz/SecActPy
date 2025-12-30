@@ -334,7 +334,7 @@ def _ridge_permutation_numpy(
     if verbose:
         print("  finalizing statistics...")
 
-    # Mean and variance of permutation distribution
+    # Variance of permutation distribution (for SE calculation)
     mean = aver / n_rand
     var = (aver_sq / n_rand) - (mean ** 2)
 
@@ -579,6 +579,7 @@ def _ridge_cupy(
     mean = aver / n_rand
     var = (aver_sq / n_rand) - (mean ** 2)
     se_gpu = cp.sqrt(cp.maximum(var, 0.0))
+    # Z-score: (beta - mean) / se
     zscore_gpu = cp.where(se_gpu > EPS, (beta_gpu - mean) / se_gpu, 0.0)
     pvalue_gpu = (pvalue_counts + 1.0) / (n_rand + 1.0)
 
@@ -723,6 +724,7 @@ def ridge_with_precomputed_T(
     mean = aver / n_rand
     var = (aver_sq / n_rand) - (mean ** 2)
     se = np.sqrt(np.maximum(var, 0.0))
+    # Z-score: (beta - mean) / se
     zscore = np.where(se > EPS, (beta - mean) / se, 0.0)
     pvalue = (pvalue_counts + 1.0) / (n_rand + 1.0)
 
