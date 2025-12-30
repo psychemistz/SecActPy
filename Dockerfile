@@ -106,68 +106,70 @@ RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
         echo "Installing R..." && \
         echo "========================================" && \
-        # Add CRAN repository for latest R
         apt-get update && \
         apt-get install -y --no-install-recommends \
-            dirmngr \
-            gnupg \
-            apt-transport-https \
-            ca-certificates && \
-        wget -qO- https://cloud.r-project.org/bin/linux/ubuntu/marutter_pubkey.asc | \
-            gpg --dearmor -o /usr/share/keyrings/r-project.gpg && \
-        echo "deb [signed-by=/usr/share/keyrings/r-project.gpg] https://cloud.r-project.org/bin/linux/ubuntu jammy-cran40/" | \
-            tee /etc/apt/sources.list.d/r-project.list && \
-        apt-get update && \
-        apt-get install -y --no-install-recommends r-base r-base-dev && \
-        rm -rf /var/lib/apt/lists/*; \
+            r-base \
+            r-base-dev \
+            r-cran-rcpp \
+            r-cran-matrix \
+            r-cran-ggplot2 \
+            r-cran-dplyr \
+            r-cran-tidyr \
+            r-cran-data.table \
+            r-cran-httr \
+            r-cran-jsonlite \
+            r-cran-r6 \
+            r-cran-crayon \
+            r-cran-remotes \
+            r-bioc-biobase \
+            r-bioc-biocmanager && \
+        rm -rf /var/lib/apt/lists/* && \
+        R -e "cat('R version:', R.version.string, '\n')"; \
     else \
         echo "Skipping R installation"; \
     fi
 
-# Install R packages in stages for better error handling
+# Install additional CRAN packages not in Ubuntu repos
 ARG INSTALL_R
 RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
-        echo "Installing CRAN packages..." && \
+        echo "Installing additional CRAN packages..." && \
         echo "========================================" && \
         R -e "options(repos = c(CRAN = 'https://cloud.r-project.org/')); \
-              install.packages(c( \
-                  'remotes', \
-                  'BiocManager', \
-                  'devtools', \
-                  'Matrix', \
-                  'ggplot2', \
-                  'dplyr', \
-                  'tidyr', \
-                  'data.table', \
-                  'Rcpp', \
-                  'RcppArmadillo', \
-                  'RcppEigen', \
-                  'httr', \
-                  'jsonlite', \
-                  'R6', \
-                  'crayon' \
-              ), dependencies = TRUE)"; \
+              for (pkg in c('RcppArmadillo', 'RcppEigen', 'devtools')) { \
+                  if (!require(pkg, character.only = TRUE, quietly = TRUE)) { \
+                      cat('Installing', pkg, '...\n'); \
+                      install.packages(pkg, dependencies = TRUE) \
+                  } else { \
+                      cat(pkg, 'already installed\n') \
+                  } \
+              }"; \
     fi
 
-# Install Bioconductor packages
+# Install additional Bioconductor packages
 ARG INSTALL_R
 RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
         echo "Installing Bioconductor packages..." && \
         echo "========================================" && \
-        R -e "BiocManager::install(version = '3.18', ask = FALSE, update = FALSE)" && \
-        R -e "BiocManager::install(c( \
-                  'Biobase', \
-                  'S4Vectors', \
-                  'IRanges', \
-                  'GenomicRanges', \
-                  'SummarizedExperiment', \
-                  'SingleCellExperiment' \
-              ), ask = FALSE, update = FALSE)"; \
+        R -e "if (!require('BiocManager', quietly = TRUE)) install.packages('BiocManager'); \
+              BiocManager::install(ask = FALSE, update = FALSE)" && \
+        R -e "for (pkg in c('S4Vectors', 'IRanges', 'SummarizedExperiment', 'SingleCellExperiment', 'rhdf5')) { \
+              if (!require(pkg, character.only = TRUE, quietly = TRUE)) { \
+                  cat('Installing', pkg, '...\n'); \
+                  tryCatch({ \
+                      BiocManager::install(pkg, ask = FALSE, update = FALSE); \
+                      cat(pkg, 'OK\n') \
+                  }, error = function(e) { \
+                      cat(pkg, 'FAILED:', conditionMessage(e), '\n') \
+                  }) \
+              } else { \
+                  cat(pkg, 'already installed\n') \
+              } \
+            }"; \
     fi
 
-# Install SecAct from GitHub
+# Install SecAct from GitHub (data2intelligence/SecAct)
 ARG INSTALL_R
 RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
@@ -181,7 +183,7 @@ RUN if [ "$INSTALL_R" = "true" ]; then \
         R -e "library(SecAct); cat('SecAct version:', as.character(packageVersion('SecAct')), '\n')"; \
     fi
 
-# Install RidgeR from GitHub (optional, for cross-validation)
+# Install RidgeR from GitHub (beibeiru/RidgeR)
 ARG INSTALL_R
 RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
@@ -196,11 +198,11 @@ RUN if [ "$INSTALL_R" = "true" ]; then \
                   library(RidgeR); \
                   cat('RidgeR version:', as.character(packageVersion('RidgeR')), '\n') \
               }, error = function(e) { \
-                  cat('RidgeR installation skipped:', conditionMessage(e), '\n') \
+                  cat('RidgeR installation failed:', conditionMessage(e), '\n') \
               })"; \
     fi
 
-# Install SpaCET from GitHub (optional, for spatial transcriptomics)
+# Install SpaCET from GitHub (data2intelligence/SpaCET)
 ARG INSTALL_R
 RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
@@ -215,7 +217,7 @@ RUN if [ "$INSTALL_R" = "true" ]; then \
                   library(SpaCET); \
                   cat('SpaCET version:', as.character(packageVersion('SpaCET')), '\n') \
               }, error = function(e) { \
-                  cat('SpaCET installation skipped:', conditionMessage(e), '\n') \
+                  cat('SpaCET installation failed:', conditionMessage(e), '\n') \
               })"; \
     fi
 

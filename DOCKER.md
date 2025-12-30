@@ -1,6 +1,6 @@
 # Docker Usage Guide
 
-This guide explains how to use SecAct & SecActPy with Docker, including CPU, GPU, and R-enabled versions.
+This guide explains how to use SecAct with Docker, including CPU, GPU, and R-enabled versions.
 
 ## Quick Start
 
@@ -13,7 +13,7 @@ docker pull psychemistz/secactpy:latest
 # GPU version (Python + CuPy)
 docker pull psychemistz/secactpy:gpu
 
-# CPU + R version (Python + SecAct/SpaCET)
+# CPU + R version (Python + SecAct/RidgeR/SpaCET)
 docker pull psychemistz/secactpy:with-r
 
 # GPU + R version (full stack)
