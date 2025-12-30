@@ -38,15 +38,13 @@ Usage:
 import numpy as np
 from scipy import linalg
 from scipy import stats
-from typing import Optional, Literal, Any, Union
+from typing import Literal, Any
 import time
 import warnings
 import gc
 
 from .rng import (
     GSLRNG,
-    generate_permutation_table,
-    generate_inverse_permutation_table,
     generate_inverse_permutation_table_fast,
     get_cached_inverse_perm_table,
 )
@@ -188,7 +186,7 @@ def ridge(
         raise ValueError(f"Y must be 2D, got {Y.ndim}D")
     if X.shape[0] != Y.shape[0]:
         raise ValueError(
-            f"X and Y must have same number of rows (genes): "
+            "X and Y must have same number of rows (genes): "
             f"X has {X.shape[0]}, Y has {Y.shape[0]}"
         )
     if lambda_ < 0:

@@ -1670,7 +1670,6 @@ def secact_activity_inference_st(
             print(f"  After deduplication: {len(gene_names)} genes")
 
     n_genes = len(gene_names)
-    n_spots = len(spot_names)
 
     # --- Step 5: Normalize (counts per scale_factor) ---
     if sparse.issparse(counts):
@@ -1698,7 +1697,7 @@ def secact_activity_inference_st(
         if adata_obs is None:
             raise ValueError(
                 f"cell_type_col='{cell_type_col}' requires AnnData input with obs metadata. "
-                f"For DataFrame or Visium folder input, use is_spot_level=True."
+                "For DataFrame or Visium folder input, use is_spot_level=True."
             )
 
         if cell_type_col not in adata_obs.columns:

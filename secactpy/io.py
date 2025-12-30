@@ -635,7 +635,7 @@ def add_activity_to_anndata(
             if len(result_cols) != n_cells:
                 raise ValueError(
                     f"Activity results have {len(result_cols)} columns but AnnData has {n_cells} cells. "
-                    f"For pseudo-bulk results (per cell-type), use save_results() instead."
+                    "For pseudo-bulk results (per cell-type), use save_results() instead."
                 )
 
             # Align columns to cell order if needed
@@ -645,8 +645,8 @@ def add_activity_to_anndata(
                     result_df = result_df[cell_names]
                 else:
                     warnings.warn(
-                        f"Cell names in activity results don't exactly match AnnData. "
-                        f"Using activity column order."
+                        "Cell names in activity results don't exactly match AnnData. "
+                        "Using activity column order."
                     )
 
             # Transpose to (cells × proteins) and add to obsm
@@ -674,7 +674,7 @@ def add_activity_to_anndata(
     # Note: layers must have shape (n_obs, n_vars), but our activity is (n_obs, n_proteins)
     # So we can't add it as a standard layer. Instead, we document how to use obsm.
 
-    print(f"Added activity results to AnnData:")
+    print("Added activity results to AnnData:")
     print(f"  Cells: {n_cells}")
     print(f"  Proteins: {len(protein_names) if protein_names else 'unknown'}")
     print(f"  Added to obsm: {[k for k in adata.obsm.keys() if k.startswith(key_prefix)]}")
@@ -819,9 +819,8 @@ def _save_parquet(
     sample_names: Optional[List[str]]
 ) -> None:
     """Save results to Parquet files."""
-    try:
-        import pyarrow.parquet as pq
-    except ImportError:
+    import importlib.util
+    if importlib.util.find_spec("pyarrow") is None:
         raise ImportError("pyarrow required for parquet. Install with: pip install pyarrow")
 
     dfs = results_to_dataframes(results, feature_names, sample_names)
@@ -967,7 +966,7 @@ if __name__ == "__main__":
     print("SecActPy IO Module - Testing")
     print("=" * 60)
 
-    print(f"\nDependencies:")
+    print("\nDependencies:")
     print(f"  h5py available: {H5PY_AVAILABLE}")
     print(f"  anndata available: {ANNDATA_AVAILABLE}")
 
