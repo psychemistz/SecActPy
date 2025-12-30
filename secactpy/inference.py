@@ -7,10 +7,10 @@ secreted protein activity from gene expression data.
 Usage:
 ------
     >>> from secactpy import secact_activity
-    >>> 
+    >>>
     >>> # Basic usage with expression DataFrame
     >>> result = secact_activity(expression_df, signature_df)
-    >>> 
+    >>>
     >>> # Access results as DataFrames
     >>> activity = result['zscore']  # Activity z-scores
     >>> pvalues = result['pvalue']   # Significance
@@ -22,26 +22,27 @@ The main function `secact_activity()` handles:
 - Result formatting with proper row/column labels
 """
 
+import time
+import warnings
+from typing import Any, Dict, Literal, Optional, Union
+
 import numpy as np
 import pandas as pd
-import warnings
-from typing import Optional, Union, Dict, Any, Literal
-import time
 
-from .ridge import ridge, compute_projection_matrix, CUPY_AVAILABLE
+from .ridge import ridge
 
 __all__ = [
-    'secact_activity',
-    'secact_activity_inference',
-    'secact_activity_inference_scrnaseq',
-    'secact_activity_inference_st',
-    'load_visium_10x',
-    'load_expression_data',
-    'prepare_data',
-    'scale_columns',
-    'compute_differential',
-    'group_signatures',
-    'expand_rows',
+    "secact_activity",
+    "secact_activity_inference",
+    "secact_activity_inference_scrnaseq",
+    "secact_activity_inference_st",
+    "load_visium_10x",
+    "load_expression_data",
+    "prepare_data",
+    "scale_columns",
+    "compute_differential",
+    "group_signatures",
+    "expand_rows",
 ]
 
 
@@ -49,22 +50,23 @@ __all__ = [
 # Data Loading Functions
 # =============================================================================
 
+
 def load_expression_data(
-    filepath: Union[str, 'Path'],
+    filepath: Union[str, "Path"],
     sep: Optional[str] = None,
     gene_col: Optional[Union[str, int]] = None,
     index_col: Optional[Union[str, int]] = None,
     header: Union[int, None] = 0,
-    **kwargs
+    **kwargs,
 ) -> pd.DataFrame:
     """
     Load expression data from various file formats.
-    
+
     Handles multiple input formats:
     - Gene symbols as row names (index), columns as samples
     - First column as gene symbols, remaining columns as samples
     - TSV, CSV, or space-separated files (auto-detected)
-    
+
     Parameters
     ----------
     filepath : str or Path
@@ -84,140 +86,145 @@ def load_expression_data(
         Row number to use as column names.
     **kwargs
         Additional arguments passed to pd.read_csv().
-    
+
     Returns
     -------
     DataFrame
         Expression matrix with genes as rows (index) and samples as columns.
-    
+
     Examples
     --------
     >>> # Auto-detect format
     >>> expr = load_expression_data("data.csv")
     >>> expr = load_expression_data("data.tsv")
     >>> expr = load_expression_data("data.txt")
-    
+
     >>> # Genes in first column (not index)
     >>> expr = load_expression_data("data.csv", gene_col=0)
-    
+
     >>> # Genes in named column
     >>> expr = load_expression_data("data.csv", gene_col="GeneSymbol")
-    
+
     >>> # Custom separator
     >>> expr = load_expression_data("data.txt", sep="\\t")
-    
+
     >>> # No header row
     >>> expr = load_expression_data("data.txt", header=None)
     """
     from pathlib import Path
-    
+
     filepath = Path(filepath)
-    
+
     if not filepath.exists():
         raise FileNotFoundError(f"File not found: {filepath}")
-    
+
     # Auto-detect separator from extension
     if sep is None:
         suffix = filepath.suffix.lower()
-        if suffix == '.csv':
-            sep = ','
-        elif suffix in ['.tsv', '.tab']:
-            sep = '\t'
+        if suffix == ".csv":
+            sep = ","
+        elif suffix in [".tsv", ".tab"]:
+            sep = "\t"
         else:
             # Try to detect from first line
             sep = _detect_separator(filepath)
-    
+
     # First pass: peek at file to determine structure
     if index_col is None and gene_col is None:
         index_col = _detect_index_col(filepath, sep, header)
-    
+
     # Read the file
     try:
         if gene_col is not None:
             # Gene symbols in a specific column, not index
             df = pd.read_csv(filepath, sep=sep, header=header, index_col=None, **kwargs)
-            
+
             # Set gene column as index
             if isinstance(gene_col, int):
                 gene_col_name = df.columns[gene_col]
             else:
                 gene_col_name = gene_col
-            
+
             df = df.set_index(gene_col_name)
         else:
             # Gene symbols as row index
             df = pd.read_csv(filepath, sep=sep, header=header, index_col=index_col, **kwargs)
     except Exception as e:
         # Try with different separators
-        for try_sep in ['\t', ',', r'\s+']:
+        for try_sep in ["\t", ",", r"\s+"]:
             if try_sep == sep:
                 continue
             try:
-                df = pd.read_csv(filepath, sep=try_sep, header=header, 
-                                index_col=index_col if index_col is not None else 0, **kwargs)
+                df = pd.read_csv(
+                    filepath,
+                    sep=try_sep,
+                    header=header,
+                    index_col=index_col if index_col is not None else 0,
+                    **kwargs,
+                )
                 break
             except:
                 continue
         else:
             raise ValueError(f"Could not read file {filepath}: {e}")
-    
+
     # Clean up index name
     if df.index.name is None:
-        df.index.name = 'Gene'
-    
+        df.index.name = "Gene"
+
     # Ensure numeric data
     for col in df.columns:
         if df[col].dtype == object:
             try:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df[col] = pd.to_numeric(df[col], errors="coerce")
             except:
                 pass
-    
+
     # Drop any non-numeric columns
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     if len(numeric_cols) < len(df.columns):
         dropped = set(df.columns) - set(numeric_cols)
         warnings.warn(f"Dropped non-numeric columns: {dropped}")
         df = df[numeric_cols]
-    
+
     # Handle duplicate gene names
     if df.index.duplicated().any():
         n_dups = df.index.duplicated().sum()
         warnings.warn(f"Found {n_dups} duplicate gene names. Keeping first occurrence.")
-        df = df[~df.index.duplicated(keep='first')]
-    
+        df = df[~df.index.duplicated(keep="first")]
+
     return df
 
 
-def _detect_separator(filepath: 'Path') -> str:
+def _detect_separator(filepath: "Path") -> str:
     """Detect the most likely separator in a file."""
-    with open(filepath, 'r') as f:
+    with open(filepath) as f:
         first_lines = [f.readline() for _ in range(3)]
-    
+
     # Count potential separators
-    text = ''.join(first_lines)
-    tab_count = text.count('\t')
-    comma_count = text.count(',')
-    
+    text = "".join(first_lines)
+    tab_count = text.count("\t")
+    comma_count = text.count(",")
+
     if tab_count > comma_count:
-        return '\t'
+        return "\t"
     elif comma_count > 0:
-        return ','
+        return ","
     else:
-        return r'\s+'  # Whitespace
+        return r"\s+"  # Whitespace
 
 
-def _detect_index_col(filepath: 'Path', sep: str, header: int) -> Optional[int]:
+def _detect_index_col(filepath: "Path", sep: str, header: int) -> Optional[int]:
     """Detect if the file has row names in the first column."""
     try:
         # Read just the header and first few rows
         df_peek = pd.read_csv(filepath, sep=sep, header=header, nrows=5, index_col=None)
-        
+
         if df_peek.shape[1] < 2:
             return None
-        
+
         first_col = df_peek.iloc[:, 0]
-        
+
         # Check if first column looks like gene names (strings, not numbers)
         if first_col.dtype == object:
             # Check if values look like gene symbols
@@ -226,7 +233,7 @@ def _detect_index_col(filepath: 'Path', sep: str, header: int) -> Optional[int]:
                 return None  # First column is numeric, not gene names
             except:
                 return 0  # First column is strings, likely gene names
-        
+
         return None
     except:
         return 0  # Default to first column as index
@@ -236,14 +243,13 @@ def _detect_index_col(filepath: 'Path', sep: str, header: int) -> Optional[int]:
 # Data Preparation Functions
 # =============================================================================
 
+
 def scale_columns(
-    df: pd.DataFrame,
-    method: Literal["zscore", "center", "none"] = "zscore",
-    epsilon: float = 1e-12
+    df: pd.DataFrame, method: Literal["zscore", "center", "none"] = "zscore", epsilon: float = 1e-12
 ) -> pd.DataFrame:
     """
     Scale DataFrame columns (samples).
-    
+
     Parameters
     ----------
     df : DataFrame
@@ -254,7 +260,7 @@ def scale_columns(
         - "none": No transformation
     epsilon : float
         Small value added to std to prevent division by zero.
-    
+
     Returns
     -------
     DataFrame
@@ -262,13 +268,13 @@ def scale_columns(
     """
     if method == "none":
         return df.copy()
-    
+
     values = df.values.astype(np.float64)
-    
+
     # Column-wise centering
     means = np.nanmean(values, axis=0, keepdims=True)
     centered = values - means
-    
+
     if method == "zscore":
         stds = np.nanstd(values, axis=0, keepdims=True)
         # Warn about near-zero std columns
@@ -276,17 +282,16 @@ def scale_columns(
         if zero_std_mask.any():
             n_zero = zero_std_mask.sum()
             warnings.warn(
-                f"{n_zero} column(s) have near-zero variance. "
-                "Z-scores for these will be 0.",
-                RuntimeWarning
+                f"{n_zero} column(s) have near-zero variance. Z-scores for these will be 0.",
+                RuntimeWarning,
             )
         scaled = centered / (stds + epsilon)
     else:  # center
         scaled = centered
-    
+
     # Handle NaN/Inf
     scaled = np.nan_to_num(scaled, nan=0.0, posinf=0.0, neginf=0.0)
-    
+
     return pd.DataFrame(scaled, index=df.index, columns=df.columns)
 
 
@@ -294,16 +299,16 @@ def prepare_data(
     expression: pd.DataFrame,
     signature: pd.DataFrame,
     scale: Literal["zscore", "center", "none"] = "zscore",
-    min_genes: int = 10
+    min_genes: int = 10,
 ) -> tuple:
     """
     Prepare expression and signature matrices for ridge regression.
-    
+
     Handles:
     - Finding common genes between expression and signature
     - Aligning matrices to common gene order
     - Optional z-score scaling of expression data
-    
+
     Parameters
     ----------
     expression : DataFrame, shape (n_genes, n_samples)
@@ -314,7 +319,7 @@ def prepare_data(
         How to scale expression columns.
     min_genes : int
         Minimum number of common genes required.
-    
+
     Returns
     -------
     tuple
@@ -324,7 +329,7 @@ def prepare_data(
         - feature_names : list - Column names from signature
         - sample_names : list - Column names from expression
         - gene_names : list - Common gene names
-    
+
     Raises
     ------
     ValueError
@@ -333,58 +338,59 @@ def prepare_data(
     # Ensure string indices for matching
     expr_idx = expression.index.astype(str)
     sig_idx = signature.index.astype(str)
-    
+
     # Find common genes
     common_genes = expr_idx.intersection(sig_idx)
     n_common = len(common_genes)
-    
+
     if n_common < min_genes:
         raise ValueError(
             f"Only {n_common} common genes found between expression and signature. "
             f"Minimum required: {min_genes}. "
             "Check that gene identifiers match (e.g., both use gene symbols)."
         )
-    
+
     if n_common < len(sig_idx):
         pct = 100 * n_common / len(sig_idx)
         warnings.warn(
             f"Using {n_common}/{len(sig_idx)} ({pct:.1f}%) signature genes. "
             f"Missing genes will reduce inference accuracy.",
-            RuntimeWarning
+            RuntimeWarning,
         )
-    
+
     # Align to common genes
     # Create temporary DataFrames with string indices
     expr_aligned = expression.copy()
     expr_aligned.index = expr_idx
     sig_aligned = signature.copy()
     sig_aligned.index = sig_idx
-    
+
     # Subset to common genes (in signature order for reproducibility)
     common_genes_ordered = [g for g in sig_idx if g in common_genes]
-    
+
     Y_df = expr_aligned.loc[common_genes_ordered]
     X_df = sig_aligned.loc[common_genes_ordered]
-    
+
     # Scale expression data
     if scale != "none":
         Y_df = scale_columns(Y_df, method=scale)
-    
+
     # Extract arrays
     X = X_df.values.astype(np.float64)
     Y = Y_df.values.astype(np.float64)
-    
+
     # Store names for result labeling
     feature_names = list(X_df.columns)
     sample_names = list(Y_df.columns)
     gene_names = list(common_genes_ordered)
-    
+
     return X, Y, feature_names, sample_names, gene_names
 
 
 # =============================================================================
 # Main Inference Function
 # =============================================================================
+
 
 def secact_activity(
     expression: pd.DataFrame,
@@ -397,14 +403,14 @@ def secact_activity(
     min_genes: int = 10,
     use_gsl_rng: bool = True,
     use_cache: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
 ) -> Dict[str, Any]:
     """
     Infer secreted protein activity from gene expression data.
-    
+
     This is the main user-facing function that combines data preparation
     and ridge regression into a single convenient call.
-    
+
     Parameters
     ----------
     expression : DataFrame, shape (n_genes, n_samples)
@@ -440,12 +446,12 @@ def secact_activity(
         multiple analyses with the same gene count for faster repeated runs.
     verbose : bool, default=False
         Print progress information.
-    
+
     Returns
     -------
     dict
         Results dictionary containing:
-        
+
         - **beta** : DataFrame (n_features, n_samples)
             Regression coefficients (activity estimates).
         - **se** : DataFrame (n_features, n_samples)
@@ -462,76 +468,69 @@ def secact_activity(
             Backend used ("numpy" or "cupy").
         - **time** : float
             Total execution time in seconds.
-    
+
     Examples
     --------
     >>> import pandas as pd
     >>> from secactpy import secact_activity
-    >>> 
+    >>>
     >>> # Load your data
     >>> expression = pd.read_csv("expression.csv", index_col=0)
     >>> signature = pd.read_csv("signature.csv", index_col=0)
-    >>> 
+    >>>
     >>> # Run inference
     >>> result = secact_activity(expression, signature)
-    >>> 
+    >>>
     >>> # Get significant activities
     >>> significant = result['pvalue'] < 0.05
     >>> top_activities = result['zscore'][significant].stack().sort_values()
-    
+
     >>> # Quick analysis with t-test (faster, less accurate)
     >>> result_fast = secact_activity(expression, signature, n_rand=0)
-    
+
     Notes
     -----
     The function performs the following steps:
-    
+
     1. Find common genes between expression and signature
     2. Align matrices to common gene order
     3. Optionally z-score normalize expression columns
     4. Run ridge regression: β = (X'X + λI)^{-1} X' Y
     5. Compute significance via permutation testing
     6. Return results as labeled DataFrames
-    
+
     For compatibility with R's SecAct/RidgeR package, use the default
     parameters (lambda_=5e5, n_rand=1000, seed=0, scale="zscore").
     """
     start_time = time.time()
-    
+
     # --- Input Validation ---
     if not isinstance(expression, pd.DataFrame):
-        raise TypeError(
-            f"expression must be a pandas DataFrame, got {type(expression).__name__}"
-        )
+        raise TypeError(f"expression must be a pandas DataFrame, got {type(expression).__name__}")
     if not isinstance(signature, pd.DataFrame):
-        raise TypeError(
-            f"signature must be a pandas DataFrame, got {type(signature).__name__}"
-        )
-    
+        raise TypeError(f"signature must be a pandas DataFrame, got {type(signature).__name__}")
+
     if verbose:
-        print(f"SecAct Activity Inference")
+        print("SecAct Activity Inference")
         print(f"  Expression: {expression.shape[0]} genes × {expression.shape[1]} samples")
         print(f"  Signature: {signature.shape[0]} genes × {signature.shape[1]} features")
-    
+
     # --- Prepare Data ---
     if verbose:
         print("  Preparing data...")
-    
+
     X, Y, feature_names, sample_names, gene_names = prepare_data(
-        expression=expression,
-        signature=signature,
-        scale=scale,
-        min_genes=min_genes
+        expression=expression, signature=signature, scale=scale, min_genes=min_genes
     )
-    
+
     n_genes_used = len(gene_names)
     if verbose:
         print(f"  Using {n_genes_used} common genes (of {signature.shape[0]} signature genes)")
-    
+
     # --- Run Ridge Regression ---
     if verbose:
         print(f"  Running ridge regression (n_rand={n_rand})...")
-    
+
     ridge_result = ridge(
         X=X,
         Y=Y,
@@ -541,72 +540,53 @@ def secact_activity(
         backend=backend,
         use_gsl_rng=use_gsl_rng,
         use_cache=use_cache,
-        verbose=verbose
+        verbose=verbose,
     )
-    
+
     # --- Format Results as DataFrames ---
     if verbose:
         print("  Formatting results...")
-    
-    beta_df = pd.DataFrame(
-        ridge_result['beta'],
-        index=feature_names,
-        columns=sample_names
-    )
-    se_df = pd.DataFrame(
-        ridge_result['se'],
-        index=feature_names,
-        columns=sample_names
-    )
-    zscore_df = pd.DataFrame(
-        ridge_result['zscore'],
-        index=feature_names,
-        columns=sample_names
-    )
-    pvalue_df = pd.DataFrame(
-        ridge_result['pvalue'],
-        index=feature_names,
-        columns=sample_names
-    )
-    
+
+    beta_df = pd.DataFrame(ridge_result["beta"], index=feature_names, columns=sample_names)
+    se_df = pd.DataFrame(ridge_result["se"], index=feature_names, columns=sample_names)
+    zscore_df = pd.DataFrame(ridge_result["zscore"], index=feature_names, columns=sample_names)
+    pvalue_df = pd.DataFrame(ridge_result["pvalue"], index=feature_names, columns=sample_names)
+
     total_time = time.time() - start_time
-    
+
     if verbose:
         print(f"  Completed in {total_time:.2f}s")
-    
+
     # --- Build Result Dictionary ---
     result = {
         # Main results as DataFrames
-        'beta': beta_df,
-        'se': se_df,
-        'zscore': zscore_df,
-        'pvalue': pvalue_df,
-        
+        "beta": beta_df,
+        "se": se_df,
+        "zscore": zscore_df,
+        "pvalue": pvalue_df,
         # Metadata
-        'n_genes': n_genes_used,
-        'genes': gene_names,
-        'features': feature_names,
-        'samples': sample_names,
-        
+        "n_genes": n_genes_used,
+        "genes": gene_names,
+        "features": feature_names,
+        "samples": sample_names,
         # Execution info
-        'method': ridge_result['method'],
-        'time': total_time,
-        'ridge_time': ridge_result['time'],
-        
+        "method": ridge_result["method"],
+        "time": total_time,
+        "ridge_time": ridge_result["time"],
         # Parameters used
-        'params': {
-            'lambda_': lambda_,
-            'n_rand': n_rand,
-            'seed': seed,
-            'scale': scale,
-            'backend': backend
-        }
+        "params": {
+            "lambda_": lambda_,
+            "n_rand": n_rand,
+            "seed": seed,
+            "scale": scale,
+            "backend": backend,
+        },
     }
-    
+
     # Add t-test df if applicable
-    if 'df' in ridge_result:
-        result['df'] = ridge_result['df']
-    
+    if "df" in ridge_result:
+        result["df"] = ridge_result["df"]
+
     return result
 
 
@@ -614,15 +594,16 @@ def secact_activity(
 # Differential Expression Helper
 # =============================================================================
 
+
 def compute_differential(
     treatment: pd.DataFrame,
     control: Optional[pd.DataFrame] = None,
     paired: bool = False,
-    aggregate: bool = True
+    aggregate: bool = True,
 ) -> pd.DataFrame:
     """
     Compute differential expression profile.
-    
+
     Parameters
     ----------
     treatment : DataFrame
@@ -635,7 +616,7 @@ def compute_differential(
         (requires matching column names).
     aggregate : bool, default=True
         If True, average across samples to get single profile.
-    
+
     Returns
     -------
     DataFrame
@@ -643,7 +624,7 @@ def compute_differential(
     """
     treatment = treatment.copy()
     treatment.index = treatment.index.astype(str)
-    
+
     if control is None:
         # Center by row means
         row_means = treatment.mean(axis=1)
@@ -651,15 +632,15 @@ def compute_differential(
     else:
         control = control.copy()
         control.index = control.index.astype(str)
-        
+
         # Find common genes
         common_genes = treatment.index.intersection(control.index)
         if len(common_genes) == 0:
             raise ValueError("No common genes between treatment and control")
-        
+
         treatment = treatment.loc[common_genes]
         control = control.loc[common_genes]
-        
+
         if paired:
             # Paired differences (matching samples)
             common_samples = treatment.columns.intersection(control.columns)
@@ -670,13 +651,13 @@ def compute_differential(
             # Difference from control mean
             control_mean = control.mean(axis=1)
             diff = treatment.subtract(control_mean, axis=0)
-    
+
     if aggregate:
-        diff = pd.DataFrame({'differential': diff.mean(axis=1)})
-    
+        diff = pd.DataFrame({"differential": diff.mean(axis=1)})
+
     # Handle NaN
     diff = diff.fillna(0)
-    
+
     return diff
 
 
@@ -684,20 +665,18 @@ def compute_differential(
 # Signature Grouping (matching R's SecAct.activity.inference)
 # =============================================================================
 
-def group_signatures(
-    X: pd.DataFrame,
-    cor_threshold: float = 0.9
-) -> pd.DataFrame:
+
+def group_signatures(X: pd.DataFrame, cor_threshold: float = 0.9) -> pd.DataFrame:
     """
     Group similar signatures by Pearson correlation.
-    
+
     Matches R's .group_signatures function from RidgeR:
     - Calculate correlation-based distance
     - Hierarchical clustering (complete linkage)
     - Cut tree at 1 - cor_threshold
     - Average signatures within groups
     - Name groups as "A|B|C"
-    
+
     Parameters
     ----------
     X : DataFrame
@@ -705,37 +684,37 @@ def group_signatures(
     cor_threshold : float, default=0.9
         Correlation threshold for grouping.
         Signatures with correlation >= threshold are grouped together.
-    
+
     Returns
     -------
     DataFrame
         Grouped signature matrix with averaged values and pipe-delimited names.
-    
+
     Examples
     --------
     >>> sig = load_signature('secact')
     >>> grouped = group_signatures(sig, cor_threshold=0.9)
     >>> print(f"Reduced from {sig.shape[1]} to {grouped.shape[1]} groups")
     """
-    from scipy.cluster.hierarchy import linkage, fcluster
+    from scipy.cluster.hierarchy import fcluster, linkage
     from scipy.spatial.distance import pdist
-    
+
     n_features = X.shape[1]
-    
+
     # Handle edge case: single column
     if n_features <= 1:
         return X.copy()
-    
+
     # Calculate correlation distance (1 - correlation)
     # pdist expects samples as rows, so we transpose X
     # metric='correlation' computes 1 - pearson_correlation
     try:
-        dist_condensed = pdist(X.T.values, metric='correlation')
+        dist_condensed = pdist(X.T.values, metric="correlation")
         # Handle NaN in distances (from constant columns)
         dist_condensed = np.nan_to_num(dist_condensed, nan=1.0)
     except Exception:
         # Fallback: compute manually
-        corr_matrix = X.corr(method='pearson')
+        corr_matrix = X.corr(method="pearson")
         corr_matrix = corr_matrix.fillna(0).clip(-1, 1)
         n = len(corr_matrix)
         dist_condensed = []
@@ -743,55 +722,55 @@ def group_signatures(
             for j in range(i + 1, n):
                 dist_condensed.append(1 - corr_matrix.iloc[i, j])
         dist_condensed = np.array(dist_condensed)
-    
+
     # Hierarchical clustering with complete linkage (matching R)
-    Z = linkage(dist_condensed, method='complete')
-    
+    Z = linkage(dist_condensed, method="complete")
+
     # Cut tree at distance = 1 - cor_threshold
     cut_height = 1 - cor_threshold
-    group_labels = fcluster(Z, t=cut_height, criterion='distance')
-    
+    group_labels = fcluster(Z, t=cut_height, criterion="distance")
+
     # Create mapping from protein to group
     protein_names = list(X.columns)
     protein_groups = dict(zip(protein_names, group_labels))
-    
+
     # Build new signature matrix with grouped signatures
     # Use list to collect columns, then concat at once (avoiding fragmentation warning)
     group_data = {}
-    
+
     for group_id in sorted(set(group_labels)):
         # Get proteins in this group (sorted for consistent naming)
         proteins_in_group = sorted([p for p, g in protein_groups.items() if g == group_id])
-        
+
         # Create group name (e.g., "A|B|C")
         group_name = "|".join(proteins_in_group)
-        
+
         # Average signatures within group
         group_data[group_name] = X[proteins_in_group].mean(axis=1)
-    
+
     new_sig = pd.DataFrame(group_data, index=X.index)
-    
+
     return new_sig
 
 
 def expand_rows(mat: pd.DataFrame) -> pd.DataFrame:
     """
     Expand rows with pipe-delimited names.
-    
+
     Matches R's .expand_rows function from RidgeR:
     Expands rows where index contains "|" (grouped signatures) into
     separate rows with duplicated values.
-    
+
     Parameters
     ----------
     mat : DataFrame
         Matrix with potentially grouped row names (e.g., "A|B|C")
-    
+
     Returns
     -------
     DataFrame
         Matrix with expanded rows
-    
+
     Examples
     --------
     >>> # If mat has row "IL6|IL6R" with values [1, 2]
@@ -800,7 +779,7 @@ def expand_rows(mat: pd.DataFrame) -> pd.DataFrame:
     """
     new_rows = []
     new_names = []
-    
+
     for idx in mat.index:
         idx_str = str(idx)
         if "|" in idx_str:
@@ -812,7 +791,7 @@ def expand_rows(mat: pd.DataFrame) -> pd.DataFrame:
         else:
             new_rows.append(mat.loc[idx].values)
             new_names.append(idx_str)
-    
+
     result = pd.DataFrame(new_rows, index=new_names, columns=mat.columns)
     return result
 
@@ -821,9 +800,10 @@ def expand_rows(mat: pd.DataFrame) -> pd.DataFrame:
 # Full Inference Function (matching R's SecAct.activity.inference)
 # =============================================================================
 
+
 def secact_activity_inference(
-    input_profile: Union[pd.DataFrame, str, 'Path'],
-    input_profile_control: Union[pd.DataFrame, str, 'Path', None] = None,
+    input_profile: Union[pd.DataFrame, str, "Path"],
+    input_profile_control: Union[pd.DataFrame, str, "Path", None] = None,
     is_differential: bool = False,
     is_paired: bool = False,
     is_single_sample_level: bool = False,
@@ -838,30 +818,30 @@ def secact_activity_inference(
     backend: str = "numpy",
     use_gsl_rng: bool = True,
     use_cache: bool = False,
-    verbose: bool = True
+    verbose: bool = True,
 ) -> Dict[str, pd.DataFrame]:
     """
     Secreted Protein Activity Inference (matching R's SecAct.activity.inference).
-    
+
     This function provides full compatibility with the R RidgeR package,
     including signature grouping and row expansion.
-    
+
     Parameters
     ----------
     input_profile : DataFrame, str, or Path
         Gene expression matrix (genes × samples). Can be:
         - pandas DataFrame with genes as index
         - Path to file (CSV, TSV, or TXT)
-        
+
         Supported file formats:
         - CSV (comma-separated)
-        - TSV (tab-separated) 
+        - TSV (tab-separated)
         - TXT (space or tab-separated)
-        
+
         File can have genes as:
         - Row names (index): first column is gene symbols
         - First column: use gene_col=0 parameter
-        
+
     input_profile_control : DataFrame, str, Path, or None, optional
         Control expression matrix (genes × samples).
         Accepts same formats as input_profile.
@@ -899,7 +879,7 @@ def secact_activity_inference(
         multiple analyses with the same gene count for faster repeated runs.
     verbose : bool, default=True
         Print progress information.
-    
+
     Returns
     -------
     dict
@@ -908,27 +888,28 @@ def secact_activity_inference(
         - se : DataFrame (proteins × samples) - Standard errors
         - zscore : DataFrame (proteins × samples) - Z-scores
         - pvalue : DataFrame (proteins × samples) - P-values
-    
+
     Examples
     --------
     >>> # From file path (auto-detect format)
     >>> result = secact_activity_inference("diff_expr.csv", is_differential=True)
     >>> result = secact_activity_inference("diff_expr.tsv", is_differential=True)
     >>> result = secact_activity_inference("diff_expr.txt", is_differential=True)
-    
+
     >>> # From file with genes in first column
     >>> result = secact_activity_inference("data.csv", gene_col=0, is_differential=True)
-    
+
     >>> # From DataFrame
     >>> expr_diff = pd.read_csv("Ly86-Fc_vs_Vehicle_logFC.txt", sep="\\t", index_col=0)
     >>> result = secact_activity_inference(expr_diff, is_differential=True)
-    
+
     >>> # Access results
     >>> print(result['zscore'].head())
     """
     from pathlib import Path
+
     from .signature import load_signature
-    
+
     # --- Step 0: Load input data if file path ---
     if isinstance(input_profile, (str, Path)):
         if verbose:
@@ -936,18 +917,20 @@ def secact_activity_inference(
         input_profile = load_expression_data(input_profile, gene_col=gene_col)
         if verbose:
             print(f"  Loaded: {input_profile.shape[0]} genes × {input_profile.shape[1]} samples")
-    
+
     if input_profile_control is not None and isinstance(input_profile_control, (str, Path)):
         if verbose:
             print(f"  Loading control file: {input_profile_control}")
         input_profile_control = load_expression_data(input_profile_control, gene_col=gene_col)
         if verbose:
-            print(f"  Loaded control: {input_profile_control.shape[0]} genes × {input_profile_control.shape[1]} samples")
-    
+            print(
+                f"  Loaded control: {input_profile_control.shape[0]} genes × {input_profile_control.shape[1]} samples"
+            )
+
     # Ensure input_profile is a DataFrame
     if not isinstance(input_profile, pd.DataFrame):
         raise ValueError("input_profile must be a DataFrame or path to expression file")
-    
+
     # --- Step 1: Load signature matrix ---
     if isinstance(sig_matrix, pd.DataFrame):
         X = sig_matrix.copy()
@@ -956,13 +939,13 @@ def secact_activity_inference(
             X = load_signature(sig_matrix)
         else:
             # Assume it's a file path
-            X = pd.read_csv(sig_matrix, sep='\t', index_col=0)
+            X = pd.read_csv(sig_matrix, sep="\t", index_col=0)
     else:
         raise ValueError("sig_matrix must be 'secact', 'cytosig', a file path, or a DataFrame")
-    
+
     if verbose:
         print(f"  Loaded signature: {X.shape[0]} genes × {X.shape[1]} proteins")
-    
+
     # --- Step 2: Compute differential expression if needed ---
     if is_differential:
         Y = input_profile.copy()
@@ -982,16 +965,16 @@ def secact_activity_inference(
                 # Difference from control mean
                 control_mean = input_profile_control.mean(axis=1)
                 Y = input_profile.subtract(control_mean, axis=0)
-            
+
             if not is_single_sample_level:
                 # Aggregate to single column
                 Y = pd.DataFrame({"Change": Y.mean(axis=1)})
-    
+
     # --- Step 3: Filter signatures if requested ---
     if sig_filter:
         available_genes = set(Y.index)
         X = X.loc[:, X.columns.isin(available_genes)]
-    
+
     # --- Step 4: Group similar signatures if requested ---
     if is_group_sig:
         if verbose:
@@ -999,36 +982,36 @@ def secact_activity_inference(
         X = group_signatures(X, cor_threshold=is_group_cor)
         if verbose:
             print(f"  Grouped into {X.shape[1]} signature groups")
-    
+
     # --- Step 5: Find overlapping genes ---
     common_genes = Y.index.intersection(X.index)
-    
+
     if verbose:
         print(f"  Common genes: {len(common_genes)}")
-    
+
     if len(common_genes) < 2:
         raise ValueError(
             f"Too few overlapping genes ({len(common_genes)}) between expression and signature matrices! "
             "Check that gene identifiers match (e.g., both use gene symbols)."
         )
-    
+
     # --- Step 6: Subset to common genes ---
     X_aligned = X.loc[common_genes].astype(np.float64)
     Y_aligned = Y.loc[common_genes].astype(np.float64)
-    
+
     # --- Step 7: Scale (z-score normalize columns) ---
     # R's scale() function: (x - mean) / sd where sd uses n-1 denominator (ddof=1)
     X_scaled = (X_aligned - X_aligned.mean()) / X_aligned.std(ddof=1)
     Y_scaled = (Y_aligned - Y_aligned.mean()) / Y_aligned.std(ddof=1)
-    
+
     # --- Step 8: Replace NaN with 0 (from constant columns) ---
     X_scaled = X_scaled.fillna(0)
     Y_scaled = Y_scaled.fillna(0)
-    
+
     # --- Step 9: Run ridge regression ---
     if verbose:
         print(f"  Running ridge regression (n_rand={n_rand})...")
-    
+
     result = ridge(
         X=X_scaled.values,
         Y=Y_scaled.values,
@@ -1038,18 +1021,18 @@ def secact_activity_inference(
         backend=backend,
         use_gsl_rng=use_gsl_rng,
         use_cache=use_cache,
-        verbose=False
+        verbose=False,
     )
-    
+
     # --- Step 10: Create DataFrames with proper labels ---
     feature_names = X_scaled.columns.tolist()
     sample_names = Y_scaled.columns.tolist()
-    
-    beta_df = pd.DataFrame(result['beta'], index=feature_names, columns=sample_names)
-    se_df = pd.DataFrame(result['se'], index=feature_names, columns=sample_names)
-    zscore_df = pd.DataFrame(result['zscore'], index=feature_names, columns=sample_names)
-    pvalue_df = pd.DataFrame(result['pvalue'], index=feature_names, columns=sample_names)
-    
+
+    beta_df = pd.DataFrame(result["beta"], index=feature_names, columns=sample_names)
+    se_df = pd.DataFrame(result["se"], index=feature_names, columns=sample_names)
+    zscore_df = pd.DataFrame(result["zscore"], index=feature_names, columns=sample_names)
+    pvalue_df = pd.DataFrame(result["pvalue"], index=feature_names, columns=sample_names)
+
     # --- Step 11: Expand grouped signatures back to individual rows ---
     if is_group_sig:
         if verbose:
@@ -1058,28 +1041,24 @@ def secact_activity_inference(
         se_df = expand_rows(se_df)
         zscore_df = expand_rows(zscore_df)
         pvalue_df = expand_rows(pvalue_df)
-        
+
         # Sort by row name (matching R's behavior)
         row_order = sorted(beta_df.index)
         beta_df = beta_df.loc[row_order]
         se_df = se_df.loc[row_order]
         zscore_df = zscore_df.loc[row_order]
         pvalue_df = pvalue_df.loc[row_order]
-    
+
     if verbose:
         print(f"  Result shape: {beta_df.shape}")
-    
-    return {
-        'beta': beta_df,
-        'se': se_df,
-        'zscore': zscore_df,
-        'pvalue': pvalue_df
-    }
+
+    return {"beta": beta_df, "se": se_df, "zscore": zscore_df, "pvalue": pvalue_df}
 
 
 # =============================================================================
 # scRNAseq Activity Inference (matching R's SecAct.activity.inference.scRNAseq)
 # =============================================================================
+
 
 def secact_activity_inference_scrnaseq(
     adata,
@@ -1095,14 +1074,14 @@ def secact_activity_inference_scrnaseq(
     backend: str = "auto",
     use_gsl_rng: bool = True,
     use_cache: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
 ) -> Dict[str, Any]:
     """
     Cell State Activity Inference from Single Cell RNA-seq Data.
-    
+
     Calculate secreted protein signaling activity from scRNA-seq data.
     Matches R's RidgeR::SecAct.activity.inference.scRNAseq behavior.
-    
+
     Parameters
     ----------
     adata : AnnData
@@ -1134,7 +1113,7 @@ def secact_activity_inference_scrnaseq(
         Set to False for faster inference when R matching is not needed.
     verbose : bool, default=False
         If True, print progress messages.
-    
+
     Returns
     -------
     dict
@@ -1143,13 +1122,13 @@ def secact_activity_inference_scrnaseq(
         - 'se': DataFrame of standard errors
         - 'zscore': DataFrame of z-scores
         - 'pvalue': DataFrame of p-values
-    
+
     Examples
     --------
     >>> import scanpy as sc
     >>> adata = sc.read_h5ad("data.h5ad")
     >>> result = secact_activity_inference_scrnaseq(
-    ...     adata, 
+    ...     adata,
     ...     cell_type_col="cell_type",
     ...     is_single_cell_level=False
     ... )
@@ -1163,13 +1142,11 @@ def secact_activity_inference_scrnaseq(
             "anndata and scipy are required for scRNAseq analysis. "
             "Install with: pip install anndata scipy"
         )
-    
-    from .signature import load_signature
-    
+
     if verbose:
         print("SecActPy scRNAseq Activity Inference")
         print("=" * 50)
-    
+
     # --- Step 1: Extract count matrix ---
     # AnnData stores as (cells × genes), we need (genes × cells) like R
     # Prefer raw counts if available
@@ -1183,92 +1160,94 @@ def secact_activity_inference_scrnaseq(
         gene_names = list(adata.var_names)
         if verbose:
             print(f"  Using adata.X: {counts_raw.shape} (cells × genes)")
-    
+
     # Transpose to (genes × cells) to match R convention
     if sparse.issparse(counts_raw):
         counts = counts_raw.T.tocsr()  # Now (genes × cells)
     else:
         counts = counts_raw.T  # Now (genes × cells)
-    
+
     if verbose:
         print(f"  Transposed to: {counts.shape} (genes × cells)")
-    
+
     # Get cell names and cell types
     cell_names = list(adata.obs_names)
-    
+
     if cell_type_col not in adata.obs.columns:
-        raise ValueError(f"Cell type column '{cell_type_col}' not found in adata.obs. "
-                        f"Available columns: {list(adata.obs.columns)}")
-    
+        raise ValueError(
+            f"Cell type column '{cell_type_col}' not found in adata.obs. "
+            f"Available columns: {list(adata.obs.columns)}"
+        )
+
     cell_types = adata.obs[cell_type_col].values
-    
+
     # --- Step 2: Standardize gene symbols ---
     # Convert to uppercase (matching R's .transfer_symbol)
     gene_names = [g.upper() for g in gene_names]
-    
+
     # Remove version numbers (e.g., "GENE.1" -> "GENE")
-    gene_names = [g.split('.')[0] if '.' in g else g for g in gene_names]
-    
+    gene_names = [g.split(".")[0] if "." in g else g for g in gene_names]
+
     # --- Step 3: Handle duplicates (keep highest mean) ---
     if len(gene_names) != len(set(gene_names)):
         if verbose:
             print("  Removing duplicate genes (keeping highest mean)...")
-        
+
         # Calculate mean per gene (axis=1 since matrix is now genes × cells)
         if sparse.issparse(counts):
             gene_means = np.asarray(counts.mean(axis=1)).ravel()
         else:
             gene_means = np.mean(counts, axis=1)
-        
+
         # Keep best duplicate
         gene_to_best_idx = {}
         for idx, gene in enumerate(gene_names):
             if gene not in gene_to_best_idx or gene_means[idx] > gene_means[gene_to_best_idx[gene]]:
                 gene_to_best_idx[gene] = idx
-        
+
         keep_idx = sorted(gene_to_best_idx.values())
         counts = counts[keep_idx, :]
         gene_names = [gene_names[i] for i in keep_idx]
-    
+
     n_genes = len(gene_names)
     n_cells = len(cell_names)
-    
+
     if verbose:
         print(f"  Genes: {n_genes}, Cells: {n_cells}")
         print(f"  Cell types: {len(set(cell_types))}")
-    
+
     # --- Step 4: Aggregate or normalize ---
     if not is_single_cell_level:
         # Pseudo-bulk: sum counts by cell type, then TPM normalize
         if verbose:
             print("  Aggregating to pseudo-bulk by cell type...")
-        
+
         unique_cell_types = sorted(set(cell_types))
         n_types = len(unique_cell_types)
-        
+
         # Sum counts per cell type
         pseudo_bulk = np.zeros((n_genes, n_types), dtype=np.float64)
-        
+
         for j, ct in enumerate(unique_cell_types):
             mask = cell_types == ct
             cell_idx = np.where(mask)[0]
-            
+
             if sparse.issparse(counts):
                 pseudo_bulk[:, j] = np.asarray(counts[:, cell_idx].sum(axis=1)).ravel()
             else:
                 pseudo_bulk[:, j] = counts[:, cell_idx].sum(axis=1)
-        
+
         # TPM normalize (counts per million)
         col_sums = pseudo_bulk.sum(axis=0)
         expr = pseudo_bulk / col_sums * 1e6
-        
+
         sample_names = unique_cell_types
-        
+
     else:
         # Single cell level: normalize per cell (counts per 100k)
         if verbose:
             print("  Normalizing per cell (CPM/10)...")
-        
+
         if sparse.issparse(counts):
             col_sums = np.asarray(counts.sum(axis=0)).ravel()
             # Normalize - convert to dense for simplicity
@@ -1276,24 +1255,24 @@ def secact_activity_inference_scrnaseq(
         else:
             col_sums = counts.sum(axis=0)
             expr = counts.astype(np.float64)
-        
+
         expr = expr / col_sums * 1e5  # Counts per 100k (like R)
-        
+
         sample_names = cell_names
-    
+
     # --- Step 5: Log2 transform ---
     expr = np.log2(expr + 1)
-    
+
     # --- Step 6: Compute differential expression (vs row mean) ---
     row_means = expr.mean(axis=1, keepdims=True)
     expr_diff = expr - row_means
-    
+
     # Create DataFrame
     expr_df = pd.DataFrame(expr_diff, index=gene_names, columns=sample_names)
-    
+
     if verbose:
         print(f"  Expression matrix: {expr_df.shape}")
-    
+
     # --- Step 7: Run activity inference ---
     result = secact_activity_inference(
         input_profile=expr_df,
@@ -1308,9 +1287,9 @@ def secact_activity_inference_scrnaseq(
         backend=backend,
         use_gsl_rng=use_gsl_rng,
         use_cache=use_cache,
-        verbose=verbose
+        verbose=verbose,
     )
-    
+
     return result
 
 
@@ -1318,16 +1297,13 @@ def secact_activity_inference_scrnaseq(
 # Spatial Transcriptomics Activity Inference (matching R's SecAct.activity.inference.ST)
 # =============================================================================
 
-def load_visium_10x(
-    visium_path: str,
-    min_genes: int = 0,
-    verbose: bool = False
-) -> Dict[str, Any]:
+
+def load_visium_10x(visium_path: str, min_genes: int = 0, verbose: bool = False) -> Dict[str, Any]:
     """
     Load 10X Visium spatial transcriptomics data.
-    
+
     Matches R's create.SpaCET.object.10X behavior.
-    
+
     Parameters
     ----------
     visium_path : str
@@ -1338,7 +1314,7 @@ def load_visium_10x(
         Minimum number of expressed genes per spot. Spots with fewer genes are removed.
     verbose : bool, default=False
         Print progress messages.
-    
+
     Returns
     -------
     dict
@@ -1349,56 +1325,56 @@ def load_visium_10x(
         - 'spot_coordinates': DataFrame with spatial coordinates
         - 'barcodes': list of original barcodes
     """
-    from scipy import sparse
-    from scipy.io import mmread
     import gzip
     import json
     from pathlib import Path
-    
+
+    from scipy.io import mmread
+
     visium_path = Path(visium_path)
-    
+
     if not visium_path.exists():
         raise FileNotFoundError(f"Visium path does not exist: {visium_path}")
-    
+
     # Load count matrix
     matrix_dir = visium_path / "filtered_feature_bc_matrix"
-    
+
     if not matrix_dir.exists():
         raise FileNotFoundError(f"Matrix directory not found: {matrix_dir}")
-    
+
     if verbose:
         print(f"Loading 10X Visium data from: {visium_path}")
-    
+
     # Read matrix
     matrix_path = matrix_dir / "matrix.mtx.gz"
-    with gzip.open(matrix_path, 'rb') as f:
+    with gzip.open(matrix_path, "rb") as f:
         counts = mmread(f).tocsr()  # genes × spots
-    
+
     if verbose:
         print(f"  Matrix shape: {counts.shape}")
-    
+
     # Read gene names (features)
     features_path = matrix_dir / "features.tsv.gz"
-    with gzip.open(features_path, 'rt') as f:
-        features = [line.strip().split('\t') for line in f]
-    
+    with gzip.open(features_path, "rt") as f:
+        features = [line.strip().split("\t") for line in f]
+
     # Use gene symbol (column 2 if available, else column 1)
     if len(features[0]) >= 2:
         gene_names = [f[1] for f in features]
     else:
         gene_names = [f[0] for f in features]
-    
+
     # Read barcodes
     barcodes_path = matrix_dir / "barcodes.tsv.gz"
-    with gzip.open(barcodes_path, 'rt') as f:
+    with gzip.open(barcodes_path, "rt") as f:
         barcodes = [line.strip() for line in f]
-    
+
     if verbose:
         print(f"  Genes: {len(gene_names)}, Spots: {len(barcodes)}")
-    
+
     # Load spatial information
     spatial_dir = visium_path / "spatial"
-    
+
     # Try different position file names
     positions_file = None
     for fname in ["tissue_positions_list.csv", "tissue_positions.csv"]:
@@ -1406,86 +1382,94 @@ def load_visium_10x(
         if pos_path.exists():
             positions_file = pos_path
             break
-    
+
     if positions_file is None:
         raise FileNotFoundError(f"Tissue positions file not found in: {spatial_dir}")
-    
+
     # Read positions
     # Format: barcode, in_tissue, array_row, array_col, pxl_row_in_fullres, pxl_col_in_fullres
     positions = pd.read_csv(positions_file, header=None)
-    positions.columns = ['barcode', 'in_tissue', 'array_row', 'array_col', 
-                        'pxl_row_in_fullres', 'pxl_col_in_fullres']
-    positions = positions.set_index('barcode')
-    
+    positions.columns = [
+        "barcode",
+        "in_tissue",
+        "array_row",
+        "array_col",
+        "pxl_row_in_fullres",
+        "pxl_col_in_fullres",
+    ]
+    positions = positions.set_index("barcode")
+
     # Filter to in_tissue spots
-    positions = positions[positions['in_tissue'] == 1]
-    
+    positions = positions[positions["in_tissue"] == 1]
+
     # Load scale factors
     scalefactors_path = spatial_dir / "scalefactors_json.json"
     if scalefactors_path.exists():
-        with open(scalefactors_path, 'r') as f:
+        with open(scalefactors_path) as f:
             scale_factors = json.load(f)
     else:
-        scale_factors = {'tissue_lowres_scalef': 1.0}
-    
+        scale_factors = {"tissue_lowres_scalef": 1.0}
+
     # Find overlapping spots
     common_barcodes = [b for b in barcodes if b in positions.index]
     barcode_to_idx = {b: i for i, b in enumerate(barcodes)}
     common_idx = [barcode_to_idx[b] for b in common_barcodes]
-    
+
     # Subset matrix
     counts = counts[:, common_idx]
-    
+
     # Create spot IDs in R format: "row×col"
     spot_ids = []
     spot_coords = []
     for barcode in common_barcodes:
-        row = positions.loc[barcode, 'array_row']
-        col = positions.loc[barcode, 'array_col']
+        row = positions.loc[barcode, "array_row"]
+        col = positions.loc[barcode, "array_col"]
         spot_ids.append(f"{row}x{col}")
-        spot_coords.append({
-            'barcode': barcode,
-            'array_row': row,
-            'array_col': col,
-            'pxl_row': positions.loc[barcode, 'pxl_row_in_fullres'],
-            'pxl_col': positions.loc[barcode, 'pxl_col_in_fullres'],
-        })
-    
+        spot_coords.append(
+            {
+                "barcode": barcode,
+                "array_row": row,
+                "array_col": col,
+                "pxl_row": positions.loc[barcode, "pxl_row_in_fullres"],
+                "pxl_col": positions.loc[barcode, "pxl_col_in_fullres"],
+            }
+        )
+
     spot_coordinates = pd.DataFrame(spot_coords, index=spot_ids)
-    
+
     if verbose:
         print(f"  In-tissue spots: {len(spot_ids)}")
-    
+
     # Apply quality control (min_genes filter)
     if min_genes > 0:
         genes_per_spot = np.asarray((counts > 0).sum(axis=0)).ravel()
         keep_spots = genes_per_spot >= min_genes
-        
+
         n_removed = (~keep_spots).sum()
         if verbose:
             print(f"  Removing {n_removed} spots with < {min_genes} genes")
-        
+
         counts = counts[:, keep_spots]
         spot_ids = [s for s, k in zip(spot_ids, keep_spots) if k]
         spot_coordinates = spot_coordinates.loc[spot_ids]
         common_barcodes = [b for b, k in zip(common_barcodes, keep_spots) if k]
-    
+
     if verbose:
         print(f"  Final: {counts.shape[0]} genes × {counts.shape[1]} spots")
-    
+
     return {
-        'counts': counts,
-        'gene_names': gene_names,
-        'spot_names': spot_ids,
-        'spot_coordinates': spot_coordinates,
-        'barcodes': common_barcodes,
-        'scale_factors': scale_factors,
+        "counts": counts,
+        "gene_names": gene_names,
+        "spot_names": spot_ids,
+        "spot_coordinates": spot_coordinates,
+        "barcodes": common_barcodes,
+        "scale_factors": scale_factors,
     }
 
 
 def secact_activity_inference_st(
     input_data,
-    input_control = None,
+    input_control=None,
     cell_type_col: Optional[str] = None,
     is_spot_level: bool = True,
     scale_factor: float = 1e5,
@@ -1500,13 +1484,13 @@ def secact_activity_inference_st(
     backend: str = "auto",
     use_gsl_rng: bool = True,
     use_cache: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
 ) -> Dict[str, Any]:
     """
     Spot Activity Inference from Spatial Transcriptomics Data.
-    
+
     Matches R's RidgeR::SecAct.activity.inference.ST behavior.
-    
+
     Parameters
     ----------
     input_data : str, dict, or DataFrame
@@ -1551,7 +1535,7 @@ def secact_activity_inference_st(
         Cache permutation tables to disk for reuse.
     verbose : bool, default=False
         Print progress messages.
-    
+
     Returns
     -------
     dict
@@ -1560,7 +1544,7 @@ def secact_activity_inference_st(
         - 'se': DataFrame of standard errors
         - 'zscore': DataFrame of z-scores
         - 'pvalue': DataFrame of p-values
-    
+
     Examples
     --------
     >>> # From 10X Visium folder (spot-level)
@@ -1569,7 +1553,7 @@ def secact_activity_inference_st(
     ...     min_genes=1000,
     ...     verbose=True
     ... )
-    >>> 
+    >>>
     >>> # From AnnData with cell type annotations (cell-type resolution)
     >>> result = secact_activity_inference_st(
     ...     adata,
@@ -1577,32 +1561,32 @@ def secact_activity_inference_st(
     ...     is_spot_level=False,
     ...     verbose=True
     ... )
-    >>> 
+    >>>
     >>> # From count matrix
     >>> result = secact_activity_inference_st(counts_df)
     """
     from scipy import sparse
-    
+
     if verbose:
         print("SecActPy Spatial Transcriptomics Activity Inference")
         print("=" * 50)
-    
+
     # Track cell type annotations if available
     cell_types = None
     adata_obs = None
-    
+
     # --- Step 1: Load/extract count matrix ---
     if isinstance(input_data, str):
         # Path to Visium folder
         data = load_visium_10x(input_data, min_genes=min_genes, verbose=verbose)
-        counts = data['counts']
-        gene_names = data['gene_names']
-        spot_names = data['spot_names']
-    elif isinstance(input_data, dict) and 'counts' in input_data:
+        counts = data["counts"]
+        gene_names = data["gene_names"]
+        spot_names = data["spot_names"]
+    elif isinstance(input_data, dict) and "counts" in input_data:
         # Result from load_visium_10x
-        counts = input_data['counts']
-        gene_names = input_data['gene_names']
-        spot_names = input_data['spot_names']
+        counts = input_data["counts"]
+        gene_names = input_data["gene_names"]
+        spot_names = input_data["spot_names"]
     elif isinstance(input_data, pd.DataFrame):
         # DataFrame (genes × spots)
         counts = input_data.values
@@ -1612,7 +1596,7 @@ def secact_activity_inference_st(
         # Try to handle AnnData
         try:
             # AnnData stores (cells/spots × genes)
-            if hasattr(input_data, 'X') and hasattr(input_data, 'var_names'):
+            if hasattr(input_data, "X") and hasattr(input_data, "var_names"):
                 if sparse.issparse(input_data.X):
                     counts = input_data.X.T.tocsr()  # Transpose to (genes × spots)
                 else:
@@ -1625,55 +1609,55 @@ def secact_activity_inference_st(
                 "input_data must be a path to Visium folder, dict from load_visium_10x(), "
                 "DataFrame (genes × spots), or AnnData object."
             )
-    
+
     if verbose:
         print(f"  Input: {len(gene_names)} genes × {len(spot_names)} spots")
-    
+
     # --- Step 2: Remove zero-sum genes ---
     if sparse.issparse(counts):
         gene_sums = np.asarray(counts.sum(axis=1)).ravel()
     else:
         gene_sums = np.sum(counts, axis=1)
-    
+
     nonzero_genes = gene_sums > 0
     counts = counts[nonzero_genes, :]
     gene_names = [g for g, keep in zip(gene_names, nonzero_genes) if keep]
-    
+
     if verbose:
         print(f"  After removing zero genes: {len(gene_names)} genes")
-    
+
     # --- Step 3: Standardize gene symbols ---
     # Convert to uppercase (matching R's .transfer_symbol)
     gene_names = [g.upper() for g in gene_names]
-    
+
     # Remove version numbers (e.g., "GENE.1" -> "GENE")
-    gene_names = [g.split('.')[0] if '.' in g else g for g in gene_names]
-    
+    gene_names = [g.split(".")[0] if "." in g else g for g in gene_names]
+
     # --- Step 4: Handle duplicates (keep highest sum) ---
     if len(gene_names) != len(set(gene_names)):
         if verbose:
             print("  Removing duplicate genes (keeping highest sum)...")
-        
+
         if sparse.issparse(counts):
             gene_sums = np.asarray(counts.sum(axis=1)).ravel()
         else:
             gene_sums = np.sum(counts, axis=1)
-        
+
         gene_to_best_idx = {}
         for idx, gene in enumerate(gene_names):
             if gene not in gene_to_best_idx or gene_sums[idx] > gene_sums[gene_to_best_idx[gene]]:
                 gene_to_best_idx[gene] = idx
-        
+
         keep_idx = sorted(gene_to_best_idx.values())
         counts = counts[keep_idx, :]
         gene_names = [gene_names[i] for i in keep_idx]
-        
+
         if verbose:
             print(f"  After deduplication: {len(gene_names)} genes")
-    
+
     n_genes = len(gene_names)
     n_spots = len(spot_names)
-    
+
     # --- Step 5: Normalize (counts per scale_factor) ---
     if sparse.issparse(counts):
         col_sums = np.asarray(counts.sum(axis=0)).ravel()
@@ -1682,19 +1666,19 @@ def secact_activity_inference_st(
     else:
         col_sums = np.sum(counts, axis=0)
         expr = counts.astype(np.float64)
-    
+
     # Normalize per spot
     expr = expr / col_sums * scale_factor
-    
+
     if verbose:
         print(f"  Normalized to counts per {scale_factor:.0e}")
-    
+
     # --- Step 6: Log2 transform ---
     expr = np.log2(expr + 1)
-    
+
     # --- Step 6b: Cell type aggregation (if requested) ---
     sample_names = spot_names  # Default to spot names
-    
+
     if cell_type_col is not None and not is_spot_level:
         # Validate cell type column
         if adata_obs is None:
@@ -1702,38 +1686,38 @@ def secact_activity_inference_st(
                 f"cell_type_col='{cell_type_col}' requires AnnData input with obs metadata. "
                 f"For DataFrame or Visium folder input, use is_spot_level=True."
             )
-        
+
         if cell_type_col not in adata_obs.columns:
             raise ValueError(
                 f"Cell type column '{cell_type_col}' not found in adata.obs. "
                 f"Available columns: {list(adata_obs.columns)}"
             )
-        
+
         cell_types = adata_obs[cell_type_col].values
-        
+
         if verbose:
             print(f"  Aggregating to pseudo-bulk by cell type ('{cell_type_col}')...")
-        
+
         unique_cell_types = sorted(set(cell_types))
         n_types = len(unique_cell_types)
-        
+
         if verbose:
             print(f"  Cell types: {n_types}")
-        
+
         # Aggregate by cell type (mean of log-transformed values)
         pseudo_bulk = np.zeros((n_genes, n_types), dtype=np.float64)
-        
+
         for j, ct in enumerate(unique_cell_types):
             mask = cell_types == ct
             spot_idx = np.where(mask)[0]
             pseudo_bulk[:, j] = expr[:, spot_idx].mean(axis=1)
-        
+
         expr = pseudo_bulk
         sample_names = unique_cell_types
-        
+
         if verbose:
             print(f"  Aggregated expression: {expr.shape[0]} genes × {expr.shape[1]} cell types")
-    
+
     # --- Step 7: Compute differential expression ---
     if input_control is None:
         # Use row mean as control
@@ -1743,20 +1727,20 @@ def secact_activity_inference_st(
         # Process control
         if isinstance(input_control, str):
             ctrl_data = load_visium_10x(input_control, verbose=False)
-            ctrl_counts = ctrl_data['counts']
-            ctrl_gene_names = ctrl_data['gene_names']
-        elif isinstance(input_control, dict) and 'counts' in input_control:
-            ctrl_counts = input_control['counts']
-            ctrl_gene_names = input_control['gene_names']
+            ctrl_counts = ctrl_data["counts"]
+            ctrl_gene_names = ctrl_data["gene_names"]
+        elif isinstance(input_control, dict) and "counts" in input_control:
+            ctrl_counts = input_control["counts"]
+            ctrl_gene_names = input_control["gene_names"]
         elif isinstance(input_control, pd.DataFrame):
             ctrl_counts = input_control.values
             ctrl_gene_names = list(input_control.index)
         else:
             raise ValueError("input_control format not recognized")
-        
+
         # Standardize control gene names
-        ctrl_gene_names = [g.upper().split('.')[0] for g in ctrl_gene_names]
-        
+        ctrl_gene_names = [g.upper().split(".")[0] for g in ctrl_gene_names]
+
         # Normalize and log2 transform control
         if sparse.issparse(ctrl_counts):
             ctrl_col_sums = np.asarray(ctrl_counts.sum(axis=0)).ravel()
@@ -1764,28 +1748,28 @@ def secact_activity_inference_st(
         else:
             ctrl_col_sums = np.sum(ctrl_counts, axis=0)
             ctrl_expr = ctrl_counts.astype(np.float64)
-        
+
         ctrl_expr = ctrl_expr / ctrl_col_sums * scale_factor
         ctrl_expr = np.log2(ctrl_expr + 1)
-        
+
         # Find overlapping genes
         ctrl_gene_to_idx = {g: i for i, g in enumerate(ctrl_gene_names)}
         common_genes = [g for g in gene_names if g in ctrl_gene_to_idx]
-        
+
         gene_idx = [gene_names.index(g) for g in common_genes]
         ctrl_idx = [ctrl_gene_to_idx[g] for g in common_genes]
-        
+
         expr = expr[gene_idx, :]
         ctrl_mean = ctrl_expr[ctrl_idx, :].mean(axis=1, keepdims=True)
         expr_diff = expr - ctrl_mean
         gene_names = common_genes
-    
+
     # Create DataFrame
     expr_df = pd.DataFrame(expr_diff, index=gene_names, columns=sample_names)
-    
+
     if verbose:
         print(f"  Expression matrix: {expr_df.shape}")
-    
+
     # --- Step 8: Run activity inference ---
     result = secact_activity_inference(
         input_profile=expr_df,
@@ -1800,9 +1784,9 @@ def secact_activity_inference_st(
         backend=backend,
         use_gsl_rng=use_gsl_rng,
         use_cache=use_cache,
-        verbose=verbose
+        verbose=verbose,
     )
-    
+
     return result
 
 
@@ -1814,101 +1798,96 @@ if __name__ == "__main__":
     print("=" * 60)
     print("SecActPy Inference Module - Testing")
     print("=" * 60)
-    
+
     np.random.seed(42)
-    
+
     # Create test data
     n_genes = 200
     n_features = 15
     n_samples = 10
-    
+
     # Gene names (some shared, some not)
     all_genes = [f"GENE_{i}" for i in range(n_genes + 50)]
     expr_genes = all_genes[:n_genes]
-    sig_genes = all_genes[25:n_genes + 25]  # Offset to test overlap
-    
+    sig_genes = all_genes[25 : n_genes + 25]  # Offset to test overlap
+
     # Create DataFrames
     expression = pd.DataFrame(
         np.random.randn(n_genes, n_samples),
         index=expr_genes,
-        columns=[f"Sample_{i}" for i in range(n_samples)]
+        columns=[f"Sample_{i}" for i in range(n_samples)],
     )
     signature = pd.DataFrame(
         np.random.randn(len(sig_genes), n_features),
         index=sig_genes,
-        columns=[f"Protein_{i}" for i in range(n_features)]
+        columns=[f"Protein_{i}" for i in range(n_features)],
     )
-    
-    print(f"\nTest data:")
+
+    print("\nTest data:")
     print(f"  Expression: {expression.shape}")
     print(f"  Signature: {signature.shape}")
-    
+
     # Test 1: Basic inference
     print("\n1. Testing basic inference...")
-    result = secact_activity(
-        expression, signature,
-        n_rand=100, seed=0,
-        verbose=True
-    )
-    
-    print(f"\n   Results:")
+    result = secact_activity(expression, signature, n_rand=100, seed=0, verbose=True)
+
+    print("\n   Results:")
     print(f"   - beta shape: {result['beta'].shape}")
-    print(f"   - pvalue range: [{result['pvalue'].values.min():.4f}, {result['pvalue'].values.max():.4f}]")
+    print(
+        f"   - pvalue range: [{result['pvalue'].values.min():.4f}, {result['pvalue'].values.max():.4f}]"
+    )
     print(f"   - n_genes used: {result['n_genes']}")
     print(f"   - method: {result['method']}")
-    
+
     # Verify DataFrame structure
-    assert result['beta'].index.tolist() == result['features']
-    assert result['beta'].columns.tolist() == result['samples']
+    assert result["beta"].index.tolist() == result["features"]
+    assert result["beta"].columns.tolist() == result["samples"]
     print("   ✓ DataFrame structure correct")
-    
+
     # Test 2: T-test mode
     print("\n2. Testing t-test mode (n_rand=0)...")
-    result_ttest = secact_activity(
-        expression, signature,
-        n_rand=0, seed=0
-    )
+    result_ttest = secact_activity(expression, signature, n_rand=0, seed=0)
     print(f"   - df: {result_ttest.get('df', 'N/A')}")
     print(f"   - time: {result_ttest['time']:.3f}s (vs {result['time']:.3f}s for permutation)")
     print("   ✓ T-test mode works")
-    
+
     # Test 3: Scaling options
     print("\n3. Testing scaling options...")
     for scale in ["zscore", "center", "none"]:
         r = secact_activity(expression, signature, n_rand=50, scale=scale)
         print(f"   - scale='{scale}': beta mean={r['beta'].values.mean():.6f}")
     print("   ✓ All scaling options work")
-    
+
     # Test 4: Reproducibility
     print("\n4. Testing reproducibility...")
     r1 = secact_activity(expression, signature, n_rand=100, seed=0)
     r2 = secact_activity(expression, signature, n_rand=100, seed=0)
-    
-    if np.allclose(r1['beta'].values, r2['beta'].values) and \
-       np.allclose(r1['pvalue'].values, r2['pvalue'].values):
+
+    if np.allclose(r1["beta"].values, r2["beta"].values) and np.allclose(
+        r1["pvalue"].values, r2["pvalue"].values
+    ):
         print("   ✓ Results reproducible with same seed")
     else:
         print("   ✗ Results not reproducible!")
-    
+
     # Test 5: Differential expression helper
     print("\n5. Testing differential expression helper...")
     control = pd.DataFrame(
-        np.random.randn(n_genes, 5),
-        index=expr_genes,
-        columns=[f"Ctrl_{i}" for i in range(5)]
+        np.random.randn(n_genes, 5), index=expr_genes, columns=[f"Ctrl_{i}" for i in range(5)]
     )
-    
+
     diff = compute_differential(expression, control, aggregate=True)
     print(f"   - Differential shape: {diff.shape}")
-    
+
     diff_paired = compute_differential(
         expression.iloc[:, :5].rename(columns=lambda x: x.replace("Sample", "Pair")),
         control.rename(columns=lambda x: x.replace("Ctrl", "Pair")),
-        paired=True, aggregate=False
+        paired=True,
+        aggregate=False,
     )
     print(f"   - Paired differential shape: {diff_paired.shape}")
     print("   ✓ Differential expression helper works")
-    
+
     # Test 6: Edge case - few genes
     print("\n6. Testing edge case (few common genes)...")
     small_sig = signature.iloc[:15]  # Only 15 genes
@@ -1918,7 +1897,7 @@ if __name__ == "__main__":
         print("   ✓ Works with few genes")
     except ValueError as e:
         print(f"   - Correctly raised error: {e}")
-    
+
     print("\n" + "=" * 60)
     print("Testing complete.")
     print("=" * 60)
