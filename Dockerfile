@@ -189,7 +189,7 @@ RUN if [ "$INSTALL_R" = "true" ]; then \
         echo "========================================" && \
         R -e "options(timeout = 600); \
               tryCatch({ \
-                  remotes::install_github('psychemistz/RidgeR', \
+                  remotes::install_github('beibeiru/RidgeR', \
                       dependencies = TRUE, \
                       upgrade = 'never', \
                       force = TRUE); \
