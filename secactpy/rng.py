@@ -53,21 +53,20 @@ References:
 - RidgeR source: generate_permutation_table() in ridger.c
 """
 
-from typing import Optional
-
 import numpy as np
+from typing import Optional, Tuple
 
 __all__ = [
-    "GSLRNG",
-    "generate_permutation_table",
-    "generate_inverse_permutation_table",
-    "generate_permutation_table_fast",
-    "generate_inverse_permutation_table_fast",
-    "get_cached_inverse_perm_table",
-    "get_cached_perm_table",
-    "clear_perm_cache",
-    "list_cached_tables",
-    "DEFAULT_CACHE_DIR",
+    'GSLRNG',
+    'generate_permutation_table',
+    'generate_inverse_permutation_table',
+    'generate_permutation_table_fast',
+    'generate_inverse_permutation_table_fast',
+    'get_cached_inverse_perm_table',
+    'get_cached_perm_table',
+    'clear_perm_cache',
+    'list_cached_tables',
+    'DEFAULT_CACHE_DIR',
 ]
 
 
@@ -83,7 +82,7 @@ DEFAULT_CACHE_DIR = "/data/parks34/.cache/ridgesig_perm_tables"
 def _ensure_cache_dir(cache_dir: str = None) -> str:
     """Ensure cache directory exists."""
     if cache_dir is None:
-        cache_dir = os.environ.get("SECACTPY_CACHE_DIR", DEFAULT_CACHE_DIR)
+        cache_dir = os.environ.get('SECACTPY_CACHE_DIR', DEFAULT_CACHE_DIR)
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
 
@@ -98,20 +97,19 @@ def _get_cache_filename(n: int, n_perm: int, seed: int, inverse: bool) -> str:
 # MT19937 Constants (from reference implementation)
 # =============================================================================
 
-MT_N = 624  # State size
-MT_M = 397  # Middle word
-MT_MATRIX_A = 0x9908B0DF  # Constant vector a
-MT_UPPER_MASK = 0x80000000  # Most significant bit
-MT_LOWER_MASK = 0x7FFFFFFF  # Least significant 31 bits
-MT_TEMPERING_MASK_B = 0x9D2C5680
-MT_TEMPERING_MASK_C = 0xEFC60000
-MT19937_MAX = 0xFFFFFFFF  # 2^32 - 1
+MT_N = 624                    # State size
+MT_M = 397                    # Middle word
+MT_MATRIX_A = 0x9908b0df      # Constant vector a
+MT_UPPER_MASK = 0x80000000    # Most significant bit
+MT_LOWER_MASK = 0x7fffffff    # Least significant 31 bits
+MT_TEMPERING_MASK_B = 0x9d2c5680
+MT_TEMPERING_MASK_C = 0xefc60000
+MT19937_MAX = 0xFFFFFFFF      # 2^32 - 1
 
 
 # =============================================================================
 # MT19937 Implementation - Pure Python (for correctness)
 # =============================================================================
-
 
 class MT19937Pure:
     """
@@ -121,7 +119,7 @@ class MT19937Pure:
     GSL's gsl_rng_mt19937 exactly.
     """
 
-    __slots__ = ("mt", "mti")
+    __slots__ = ('mt', 'mti')
 
     def __init__(self, seed: int = 0):
         """Initialize with seed using the reference algorithm."""
@@ -133,7 +131,7 @@ class MT19937Pure:
         """Initialize with a single seed (reference init_genrand)."""
         self.mt[0] = seed & MT19937_MAX
         for i in range(1, MT_N):
-            self.mt[i] = (1812433253 * (self.mt[i - 1] ^ (self.mt[i - 1] >> 30)) + i) & MT19937_MAX
+            self.mt[i] = (1812433253 * (self.mt[i-1] ^ (self.mt[i-1] >> 30)) + i) & MT19937_MAX
         self.mti = MT_N
 
     def genrand_int32(self) -> int:
@@ -161,10 +159,10 @@ class MT19937Pure:
         self.mti += 1
 
         # Tempering
-        y ^= y >> 11
+        y ^= (y >> 11)
         y ^= (y << 7) & MT_TEMPERING_MASK_B
         y ^= (y << 15) & MT_TEMPERING_MASK_C
-        y ^= y >> 18
+        y ^= (y >> 18)
 
         return y
 
@@ -172,7 +170,6 @@ class MT19937Pure:
 # =============================================================================
 # GSL-Compatible RNG
 # =============================================================================
-
 
 class GSLRNG:
     """
@@ -205,7 +202,7 @@ class GSLRNG:
     - Fisher-Yates shuffle with cumulative state
     """
 
-    __slots__ = ("_seed", "_mt")
+    __slots__ = ('_seed', '_mt')
 
     def __init__(self, seed: int = 0):
         """
@@ -369,8 +366,11 @@ class GSLRNG:
 # Convenience Function
 # =============================================================================
 
-
-def generate_permutation_table(n: int, n_perm: int, seed: int = 0) -> np.ndarray:
+def generate_permutation_table(
+    n: int,
+    n_perm: int,
+    seed: int = 0
+) -> np.ndarray:
     """
     Generate permutation table matching RidgeR.
 
@@ -400,7 +400,11 @@ def generate_permutation_table(n: int, n_perm: int, seed: int = 0) -> np.ndarray
     return rng.permutation_table(n, n_perm)
 
 
-def generate_inverse_permutation_table(n: int, n_perm: int, seed: int = 0) -> np.ndarray:
+def generate_inverse_permutation_table(
+    n: int,
+    n_perm: int,
+    seed: int = 0
+) -> np.ndarray:
     """
     Generate inverse permutation table for T-column permutation.
 
@@ -448,8 +452,11 @@ def generate_inverse_permutation_table(n: int, n_perm: int, seed: int = 0) -> np
 # Fast Permutation Generation (NumPy native RNG)
 # =============================================================================
 
-
-def generate_inverse_permutation_table_fast(n: int, n_perm: int, seed: int = 0) -> np.ndarray:
+def generate_inverse_permutation_table_fast(
+    n: int,
+    n_perm: int,
+    seed: int = 0
+) -> np.ndarray:
     """
     Generate inverse permutation table using fast NumPy RNG.
 
@@ -498,7 +505,11 @@ def generate_inverse_permutation_table_fast(n: int, n_perm: int, seed: int = 0) 
     return table
 
 
-def generate_permutation_table_fast(n: int, n_perm: int, seed: int = 0) -> np.ndarray:
+def generate_permutation_table_fast(
+    n: int,
+    n_perm: int,
+    seed: int = 0
+) -> np.ndarray:
     """
     Generate permutation table using fast NumPy RNG.
 
@@ -532,9 +543,9 @@ def generate_permutation_table_fast(n: int, n_perm: int, seed: int = 0) -> np.nd
 # Permutation Derivation (for efficient caching across gene overlaps)
 # =============================================================================
 
-
 def derive_subset_inverse_permutation(
-    full_inv_table: np.ndarray, common_positions: np.ndarray
+    full_inv_table: np.ndarray,
+    common_positions: np.ndarray
 ) -> np.ndarray:
     """
     Derive subset inverse permutation table from full table.
@@ -587,7 +598,9 @@ def derive_subset_inverse_permutation(
     # Validate
     common_positions = np.asarray(common_positions, dtype=np.intp)
     if common_positions.max() >= n_full:
-        raise ValueError(f"common_positions max ({common_positions.max()}) >= n_full ({n_full})")
+        raise ValueError(
+            f"common_positions max ({common_positions.max()}) >= n_full ({n_full})"
+        )
 
     # Create position-to-index mapping
     pos_to_idx = np.full(n_full, -1, dtype=np.intp)
@@ -612,7 +625,7 @@ def get_derived_inverse_perm_table(
     n_perm: int = 1000,
     seed: int = 0,
     cache_dir: str = None,
-    verbose: bool = True,
+    verbose: bool = True
 ) -> np.ndarray:
     """
     Get inverse permutation table for a gene subset, derived from cached full table.
@@ -658,14 +671,13 @@ def get_derived_inverse_perm_table(
     n_common = len(common_positions)
 
     if verbose:
-        print(
-            f"  Getting inverse permutation table for {n_common} genes (derived from n={n_full})..."
-        )
+        print(f"  Getting inverse permutation table for {n_common} genes (derived from n={n_full})...")
 
     # Get full table (cached)
-    time.time()
     full_inv_table = get_cached_inverse_perm_table(
-        n_full, n_perm, seed, cache_dir=cache_dir, verbose=verbose
+        n_full, n_perm, seed,
+        cache_dir=cache_dir,
+        verbose=verbose
     )
 
     # Derive subset
@@ -680,7 +692,7 @@ def get_derived_inverse_perm_table(
     t2 = time.time()
 
     if verbose:
-        print(f"  Derived subset table in {t2 - t1:.3f}s")
+        print(f"  Derived subset table in {t2-t1:.3f}s")
 
     return derived_table
 
@@ -689,14 +701,13 @@ def get_derived_inverse_perm_table(
 # Cached Permutation Tables
 # =============================================================================
 
-
 def get_cached_perm_table(
     n: int,
     n_perm: int,
     seed: int = 0,
     cache_dir: str = None,
     force_regenerate: bool = False,
-    verbose: bool = True,
+    verbose: bool = True
 ) -> np.ndarray:
     """
     Get permutation table, loading from cache if available.
@@ -773,7 +784,7 @@ def get_cached_inverse_perm_table(
     seed: int = 0,
     cache_dir: str = None,
     force_regenerate: bool = False,
-    verbose: bool = True,
+    verbose: bool = True
 ) -> np.ndarray:
     """
     Get inverse permutation table, loading from cache if available.
@@ -900,7 +911,11 @@ def list_cached_tables(cache_dir: str = None) -> list:
         if (f.startswith("perm_") or f.startswith("inv_perm_")) and f.endswith(".npy"):
             filepath = os.path.join(cache_dir, f)
             size_mb = os.path.getsize(filepath) / (1024 * 1024)
-            tables.append({"filename": f, "path": filepath, "size_mb": size_mb})
+            tables.append({
+                'filename': f,
+                'path': filepath,
+                'size_mb': size_mb
+            })
 
     return tables
 
@@ -911,22 +926,16 @@ def list_cached_tables(cache_dir: str = None) -> list:
 
 # Reference values for validation (from GSL with seed=0)
 REFERENCE_MT19937_SEED0_FIRST10 = [
-    2357136044,
-    2546248239,
-    3071714933,
-    3626093760,
-    2588848963,
-    3684848379,
-    2340255427,
-    3638918503,
-    1819583497,
-    2678185683,
+    2357136044, 2546248239, 3071714933, 3626093760, 2588848963,
+    3684848379, 2340255427, 3638918503, 1819583497, 2678185683
 ]
 
-REFERENCE_MT19937_SEED5489_FIRST5 = [3499211612, 581869302, 3890346734, 3586334585, 545404204]
+REFERENCE_MT19937_SEED5489_FIRST5 = [
+    3499211612, 581869302, 3890346734, 3586334585, 545404204
+]
 
 
-def validate_mt19937() -> tuple[bool, str]:
+def validate_mt19937() -> Tuple[bool, str]:
     """
     Validate MT19937 implementation against reference values.
 
@@ -940,10 +949,7 @@ def validate_mt19937() -> tuple[bool, str]:
     vals = [mt.genrand_int32() for _ in range(5)]
 
     if vals != REFERENCE_MT19937_SEED5489_FIRST5:
-        return (
-            False,
-            f"MT19937(5489) mismatch: got {vals}, expected {REFERENCE_MT19937_SEED5489_FIRST5}",
-        )
+        return False, f"MT19937(5489) mismatch: got {vals}, expected {REFERENCE_MT19937_SEED5489_FIRST5}"
 
     # Test with seed 0
     mt = MT19937Pure(0)
@@ -955,7 +961,7 @@ def validate_mt19937() -> tuple[bool, str]:
     return True, "MT19937 implementation validated successfully"
 
 
-def validate_gslrng() -> tuple[bool, str]:
+def validate_gslrng() -> Tuple[bool, str]:
     """
     Validate GSLRNG implementation.
 
@@ -990,7 +996,7 @@ def generate_c_validation_code() -> str:
 
     Compile with: gcc -o gen_perm gen_perm.c -lgsl -lgslcblas
     """
-    return """
+    return '''
 #include <stdio.h>
 #include <stdlib.h>
 #include <gsl/gsl_rng.h>
@@ -1031,7 +1037,7 @@ int main() {
     free(array);
     return 0;
 }
-"""
+'''
 
 
 # =============================================================================

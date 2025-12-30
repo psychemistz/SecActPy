@@ -25,33 +25,30 @@ Usage:
     >>> cytosig_sig = load_cytosig()
 """
 
-import warnings
-from pathlib import Path
-from typing import Optional, Union
-
-import numpy as np
 import pandas as pd
+import numpy as np
+from pathlib import Path
+from typing import Optional, Union, List
+import warnings
 
 try:
-    from importlib.resources import as_file, files
-
+    from importlib.resources import files, as_file
     IMPORTLIB_AVAILABLE = True
 except ImportError:
     # Python < 3.9 fallback
     try:
-        from importlib_resources import as_file, files
-
+        from importlib_resources import files, as_file
         IMPORTLIB_AVAILABLE = True
     except ImportError:
         IMPORTLIB_AVAILABLE = False
 
 __all__ = [
-    "load_signature",
-    "load_secact",
-    "load_cytosig",
-    "list_signatures",
-    "get_signature_info",
-    "AVAILABLE_SIGNATURES",
+    'load_signature',
+    'load_secact',
+    'load_cytosig',
+    'list_signatures',
+    'get_signature_info',
+    'AVAILABLE_SIGNATURES',
 ]
 
 
@@ -60,45 +57,45 @@ __all__ = [
 # =============================================================================
 
 AVAILABLE_SIGNATURES = {
-    "secact": {
-        "filename": "SecAct.tsv.gz",
-        "description": "Secreted protein activity signature",
-        "reference": "SecAct package",
+    'secact': {
+        'filename': 'SecAct.tsv.gz',
+        'description': 'Secreted protein activity signature',
+        'reference': 'SecAct package',
     },
-    "cytosig": {
-        "filename": "CytoSig.tsv.gz",
-        "description": "Cytokine signaling signature",
-        "reference": "CytoSig database",
+    'cytosig': {
+        'filename': 'CytoSig.tsv.gz',
+        'description': 'Cytokine signaling signature',
+        'reference': 'CytoSig database',
     },
 }
 
-DEFAULT_SIGNATURE = "secact"
+DEFAULT_SIGNATURE = 'secact'
 
 
 # =============================================================================
 # Data Path Resolution
 # =============================================================================
 
-
 def _get_data_path() -> Path:
     """Get path to the data directory."""
     # Method 1: importlib.resources (recommended for installed packages)
     if IMPORTLIB_AVAILABLE:
         try:
-            data_files = files("secactpy") / "data"
+            data_files = files('secactpy') / 'data'
             return data_files
         except (TypeError, ModuleNotFoundError):
             pass
 
     # Method 2: Relative path from this file (for development)
     module_path = Path(__file__).parent
-    data_path = module_path / "data"
+    data_path = module_path / 'data'
 
     if data_path.exists():
         return data_path
 
     raise FileNotFoundError(
-        "Cannot locate secactpy data directory. Ensure the package is properly installed."
+        "Cannot locate secactpy data directory. "
+        "Ensure the package is properly installed."
     )
 
 
@@ -109,10 +106,15 @@ def _load_tsv_gz(filepath: Union[str, Path]) -> pd.DataFrame:
     Handles the format where the first column (gene names) has no header.
     """
     # Read with first column as index
-    df = pd.read_csv(filepath, sep="\t", index_col=0, compression="gzip")
+    df = pd.read_csv(
+        filepath,
+        sep='\t',
+        index_col=0,
+        compression='gzip'
+    )
 
     # Clean up index name (might be empty or None)
-    df.index.name = "gene"
+    df.index.name = 'gene'
 
     # Ensure float dtype
     df = df.astype(np.float64)
@@ -130,11 +132,10 @@ def _load_tsv_gz(filepath: Union[str, Path]) -> pd.DataFrame:
 # Main Loading Functions
 # =============================================================================
 
-
 def load_signature(
     name: str = DEFAULT_SIGNATURE,
-    features: Optional[list[str]] = None,
-    genes: Optional[list[str]] = None,
+    features: Optional[List[str]] = None,
+    genes: Optional[List[str]] = None
 ) -> pd.DataFrame:
     """
     Load a bundled signature matrix.
@@ -178,11 +179,13 @@ def load_signature(
     name_lower = name.lower()
 
     if name_lower not in AVAILABLE_SIGNATURES:
-        available = ", ".join(AVAILABLE_SIGNATURES.keys())
-        raise ValueError(f"Unknown signature '{name}'. Available: {available}")
+        available = ', '.join(AVAILABLE_SIGNATURES.keys())
+        raise ValueError(
+            f"Unknown signature '{name}'. Available: {available}"
+        )
 
     sig_info = AVAILABLE_SIGNATURES[name_lower]
-    filename = sig_info["filename"]
+    filename = sig_info['filename']
 
     # Get file path
     data_path = _get_data_path()
@@ -198,7 +201,8 @@ def load_signature(
         filepath = data_path / filename
         if not filepath.exists():
             raise FileNotFoundError(
-                f"Signature file not found: {filepath}. Ensure {filename} is in secactpy/data/"
+                f"Signature file not found: {filepath}. "
+                f"Ensure {filename} is in secactpy/data/"
             )
         df = _load_tsv_gz(filepath)
 
@@ -225,7 +229,8 @@ def load_signature(
 
 
 def load_secact(
-    features: Optional[list[str]] = None, genes: Optional[list[str]] = None
+    features: Optional[List[str]] = None,
+    genes: Optional[List[str]] = None
 ) -> pd.DataFrame:
     """
     Load the SecAct signature matrix.
@@ -244,11 +249,12 @@ def load_secact(
     DataFrame
         SecAct signature matrix.
     """
-    return load_signature("secact", features=features, genes=genes)
+    return load_signature('secact', features=features, genes=genes)
 
 
 def load_cytosig(
-    features: Optional[list[str]] = None, genes: Optional[list[str]] = None
+    features: Optional[List[str]] = None,
+    genes: Optional[List[str]] = None
 ) -> pd.DataFrame:
     """
     Load the CytoSig signature matrix.
@@ -267,15 +273,14 @@ def load_cytosig(
     DataFrame
         CytoSig signature matrix.
     """
-    return load_signature("cytosig", features=features, genes=genes)
+    return load_signature('cytosig', features=features, genes=genes)
 
 
 # =============================================================================
 # Information Functions
 # =============================================================================
 
-
-def list_signatures() -> list[str]:
+def list_signatures() -> List[str]:
     """
     List available signature matrices.
 
@@ -327,12 +332,12 @@ def get_signature_info(name: Optional[str] = None) -> dict:
         # Try to load and get shape
         try:
             sig = load_signature(name_lower)
-            info["n_genes"] = sig.shape[0]
-            info["n_features"] = sig.shape[1]
-            info["features"] = sig.columns.tolist()[:10]  # First 10
-            info["genes_sample"] = sig.index.tolist()[:5]  # First 5
+            info['n_genes'] = sig.shape[0]
+            info['n_features'] = sig.shape[1]
+            info['features'] = sig.columns.tolist()[:10]  # First 10
+            info['genes_sample'] = sig.index.tolist()[:5]  # First 5
         except Exception as e:
-            info["load_error"] = str(e)
+            info['load_error'] = str(e)
 
         return info
 
@@ -347,7 +352,6 @@ def get_signature_info(name: Optional[str] = None) -> dict:
 # =============================================================================
 # Validation Functions
 # =============================================================================
-
 
 def validate_signature(sig: pd.DataFrame) -> dict:
     """
@@ -367,41 +371,41 @@ def validate_signature(sig: pd.DataFrame) -> dict:
         Validation results with 'valid' bool and any 'warnings' or 'errors'.
     """
     result = {
-        "valid": True,
-        "warnings": [],
-        "errors": [],
-        "stats": {
-            "n_genes": sig.shape[0],
-            "n_features": sig.shape[1],
-        },
+        'valid': True,
+        'warnings': [],
+        'errors': [],
+        'stats': {
+            'n_genes': sig.shape[0],
+            'n_features': sig.shape[1],
+        }
     }
 
     # Check for NaN
     n_nan = sig.isna().sum().sum()
     if n_nan > 0:
-        result["warnings"].append(f"Contains {n_nan} NaN values")
+        result['warnings'].append(f"Contains {n_nan} NaN values")
 
     # Check for zero variance features
     zero_var = (sig.std() == 0).sum()
     if zero_var > 0:
-        result["warnings"].append(f"{zero_var} features have zero variance")
+        result['warnings'].append(f"{zero_var} features have zero variance")
 
     # Check for duplicate genes
     n_dup = sig.index.duplicated().sum()
     if n_dup > 0:
-        result["warnings"].append(f"{n_dup} duplicate gene names")
+        result['warnings'].append(f"{n_dup} duplicate gene names")
 
     # Check for empty rows/columns
     empty_rows = (sig == 0).all(axis=1).sum()
     empty_cols = (sig == 0).all(axis=0).sum()
     if empty_rows > 0:
-        result["warnings"].append(f"{empty_rows} genes have all zeros")
+        result['warnings'].append(f"{empty_rows} genes have all zeros")
     if empty_cols > 0:
-        result["warnings"].append(f"{empty_cols} features have all zeros")
+        result['warnings'].append(f"{empty_cols} features have all zeros")
 
     # Overall validity
-    if result["errors"]:
-        result["valid"] = False
+    if result['errors']:
+        result['valid'] = False
 
     return result
 
@@ -432,8 +436,8 @@ if __name__ == "__main__":
 
             # Validate
             validation = validate_signature(sig)
-            if validation["warnings"]:
-                for w in validation["warnings"]:
+            if validation['warnings']:
+                for w in validation['warnings']:
                     print(f"      Warning: {w}")
             else:
                 print("      ✓ Validation passed")
@@ -462,7 +466,7 @@ if __name__ == "__main__":
     for name in list_signatures():
         try:
             info = get_signature_info(name)
-            if "n_genes" in info:
+            if 'n_genes' in info:
                 print(f"   {name}: {info['n_genes']} genes, {info['n_features']} features")
             else:
                 print(f"   {name}: {info.get('load_error', 'Info unavailable')}")
