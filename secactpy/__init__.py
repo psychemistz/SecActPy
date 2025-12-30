@@ -93,84 +93,83 @@ For large datasets (>100k samples):
 
 __version__ = "0.1.1"
 
+# Batch processing for large datasets
+from .batch import (
+    PopulationStats,
+    ProjectionComponents,
+    StreamingResultWriter,
+    estimate_batch_size,
+    estimate_memory,
+    precompute_population_stats,
+    precompute_projection_components,
+    ridge_batch,
+    ridge_batch_sparse_preserving,
+)
+
 # High-level API (most users need only these)
 from .inference import (
+    compute_differential,
+    expand_rows,
+    group_signatures,
+    load_expression_data,
+    load_visium_10x,
+    prepare_data,
+    scale_columns,
     secact_activity,
     secact_activity_inference,
     secact_activity_inference_scrnaseq,
     secact_activity_inference_st,
-    load_visium_10x,
-    load_expression_data,
-    prepare_data,
-    scale_columns,
-    compute_differential,
-    group_signatures,
-    expand_rows,
 )
 
-# Signature loading
-from .signature import (
-    load_signature,
-    load_secact,
-    load_cytosig,
-    list_signatures,
-    get_signature_info,
-    AVAILABLE_SIGNATURES,
+# I/O utilities
+from .io import (
+    ANNDATA_AVAILABLE,
+    H5PY_AVAILABLE,
+    add_activity_to_anndata,
+    concatenate_results,
+    get_file_info,
+    load_as_anndata,
+    load_results,
+    results_to_anndata,
+    results_to_dataframes,
+    save_results,
+    save_st_results_to_h5ad,
 )
 
 # Lower-level ridge functions (for advanced users)
 from .ridge import (
-    ridge,
-    compute_projection_matrix,
-    ridge_with_precomputed_T,
     CUPY_AVAILABLE,
     CUPY_INIT_ERROR,
     DEFAULT_LAMBDA,
     DEFAULT_NRAND,
     DEFAULT_SEED,
-)
-
-# Batch processing for large datasets
-from .batch import (
-    ridge_batch,
-    estimate_batch_size,
-    estimate_memory,
-    StreamingResultWriter,
-    # Sparse-preserving batch processing
-    PopulationStats,
-    ProjectionComponents,
-    precompute_population_stats,
-    precompute_projection_components,
-    ridge_batch_sparse_preserving,
-)
-
-# I/O utilities
-from .io import (
-    load_results,
-    save_results,
-    results_to_anndata,
-    load_as_anndata,
-    results_to_dataframes,
-    get_file_info,
-    concatenate_results,
-    save_st_results_to_h5ad,
-    add_activity_to_anndata,
-    H5PY_AVAILABLE,
-    ANNDATA_AVAILABLE,
+    compute_projection_matrix,
+    ridge,
+    ridge_with_precomputed_T,
 )
 
 # RNG (for reproducibility testing)
 from .rng import (
-    GSLRNG, 
-    generate_permutation_table, 
-    generate_inverse_permutation_table,
-    generate_permutation_table_fast,
-    generate_inverse_permutation_table_fast,
-    get_cached_perm_table,
-    get_cached_inverse_perm_table,
-    clear_perm_cache,
-    list_cached_tables,
     DEFAULT_CACHE_DIR,
+    GSLRNG,
+    clear_perm_cache,
+    generate_inverse_permutation_table,
+    generate_inverse_permutation_table_fast,
+    generate_permutation_table,
+    generate_permutation_table_fast,
+    get_cached_inverse_perm_table,
+    get_cached_perm_table,
+    list_cached_tables,
+)
+
+# Signature loading
+from .signature import (
+    AVAILABLE_SIGNATURES,
+    get_signature_info,
+    list_signatures,
+    load_cytosig,
+    load_secact,
+    load_signature,
 )
 
 __all__ = [
@@ -186,7 +185,6 @@ __all__ = [
     "compute_differential",
     "group_signatures",
     "expand_rows",
-    
     # Signature loading
     "load_signature",
     "load_secact",
@@ -194,24 +192,20 @@ __all__ = [
     "list_signatures",
     "get_signature_info",
     "AVAILABLE_SIGNATURES",
-    
     # Ridge functions
     "ridge",
     "compute_projection_matrix",
     "ridge_with_precomputed_T",
-    
     # Batch processing
     "ridge_batch",
     "estimate_batch_size",
     "estimate_memory",
     "StreamingResultWriter",
-    # Sparse-preserving batch processing
     "PopulationStats",
     "ProjectionComponents",
     "precompute_population_stats",
     "precompute_projection_components",
     "ridge_batch_sparse_preserving",
-    
     # I/O
     "load_results",
     "save_results",
@@ -222,7 +216,6 @@ __all__ = [
     "concatenate_results",
     "save_st_results_to_h5ad",
     "add_activity_to_anndata",
-    
     # RNG and Caching
     "GSLRNG",
     "generate_permutation_table",
@@ -234,18 +227,15 @@ __all__ = [
     "clear_perm_cache",
     "list_cached_tables",
     "DEFAULT_CACHE_DIR",
-    
     # Availability flags
     "CUPY_AVAILABLE",
     "CUPY_INIT_ERROR",
     "H5PY_AVAILABLE",
     "ANNDATA_AVAILABLE",
-    
     # Constants
     "DEFAULT_LAMBDA",
     "DEFAULT_NRAND",
     "DEFAULT_SEED",
-    
     # Version
     "__version__",
 ]
