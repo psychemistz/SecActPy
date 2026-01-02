@@ -62,6 +62,9 @@ Documentation = "https://github.com/psychemistz/SecActPy#readme"
 Repository = "https://github.com/psychemistz/SecActPy"
 Issues = "https://github.com/psychemistz/SecActPy/issues"
 
+[project.scripts]
+secactpy = "secactpy.cli:main"
+
 [tool.setuptools]
 packages = ["secactpy", "secactpy.data"]
 include-package-data = true

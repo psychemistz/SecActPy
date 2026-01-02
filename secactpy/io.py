@@ -35,6 +35,7 @@ import warnings
 __all__ = [
     'load_results',
     'save_results',
+    'save_results_to_h5ad',
     'results_to_anndata',
     'load_as_anndata',
     'results_to_dataframes',
@@ -831,6 +832,146 @@ def _save_parquet(
     for name, df in dfs.items():
         out_path = parent / f"{base}_{name}.parquet"
         df.to_parquet(out_path)
+
+
+def save_results_to_h5ad(
+    results: dict[str, Any],
+    path: Union[str, Path],
+    feature_names: Optional[List[str]] = None,
+    sample_names: Optional[List[str]] = None,
+    compression: str = 'gzip',
+    verbose: bool = False
+) -> None:
+    """
+    Save results to AnnData-compatible H5AD format.
+
+    Creates an H5AD file with:
+    - X: beta coefficients (samples × features)
+    - obsm/se: standard errors
+    - obsm/zscore: z-scores
+    - obsm/pvalue: p-values
+    - obs/_index: sample names
+    - var/_index: feature names
+
+    Parameters
+    ----------
+    results : dict
+        Results dictionary with 'beta', 'se', 'zscore', 'pvalue' arrays.
+        Arrays should be (features × samples) shaped.
+    path : str or Path
+        Output path for H5AD file.
+    feature_names : list, optional
+        Feature/protein names. Uses results['feature_names'] if available.
+    sample_names : list, optional
+        Sample/cell names. Uses results['sample_names'] if available.
+    compression : str, default='gzip'
+        Compression algorithm.
+    verbose : bool, default=False
+        Print progress messages.
+
+    Examples
+    --------
+    >>> from secactpy import secact_activity_inference
+    >>> from secactpy.io import save_results_to_h5ad
+    >>>
+    >>> results = secact_activity_inference(expr, verbose=True)
+    >>> save_results_to_h5ad(results, "output.h5ad", verbose=True)
+
+    Notes
+    -----
+    The H5AD file can be loaded in Python with:
+        >>> import anndata
+        >>> adata = anndata.read_h5ad("output.h5ad")
+        >>> beta = adata.X  # (samples × features)
+        >>> zscore = adata.obsm['zscore']
+    """
+    if not H5PY_AVAILABLE:
+        raise ImportError("h5py required. Install with: pip install h5py")
+
+    path = Path(path)
+
+    # Extract arrays
+    beta = results.get('beta')
+    if beta is None:
+        raise ValueError("Results must contain 'beta' array")
+
+    # Handle DataFrame input
+    if hasattr(beta, 'values'):
+        if feature_names is None:
+            feature_names = list(beta.index)
+        if sample_names is None:
+            sample_names = list(beta.columns)
+        beta = beta.values
+
+    n_features, n_samples = beta.shape
+
+    # Get names
+    if feature_names is None:
+        feature_names = results.get('feature_names', [f"Feature_{i}" for i in range(n_features)])
+    if sample_names is None:
+        sample_names = results.get('sample_names', [f"Sample_{i}" for i in range(n_samples)])
+
+    if verbose:
+        print(f"Saving results to H5AD: {path}")
+        print(f"  Features: {n_features}")
+        print(f"  Samples:  {n_samples}")
+
+    # Remove existing file
+    if path.exists():
+        path.unlink()
+
+    with h5py.File(path, 'w') as f:
+        # Create groups
+        f.create_group('obs')
+        f.create_group('var')
+        f.create_group('obsm')
+        f.create_group('uns')
+
+        # Write X (beta, transposed: samples × features)
+        beta_t = beta.T if isinstance(beta, np.ndarray) else np.array(beta).T
+        f.create_dataset('X', data=beta_t, compression=compression)
+
+        # Write obsm (se, zscore, pvalue)
+        for name in ['se', 'zscore', 'pvalue']:
+            if name in results:
+                arr = results[name]
+                if hasattr(arr, 'values'):
+                    arr = arr.values
+                arr_t = arr.T if isinstance(arr, np.ndarray) else np.array(arr).T
+                f.create_dataset(f'obsm/{name}', data=arr_t, compression=compression)
+
+        # Write indices
+        f.create_dataset('obs/_index', data=np.array(sample_names, dtype='S'))
+        f.create_dataset('var/_index', data=np.array(feature_names, dtype='S'))
+
+        # Write uns metadata
+        f.create_dataset('uns/feature_names', data=np.array(feature_names, dtype='S'))
+        f['uns'].attrs['source'] = 'SecActPy'
+
+        # Add anndata compatibility attributes
+        f.attrs['encoding-type'] = 'anndata'
+        f.attrs['encoding-version'] = '0.8.0'
+
+        # obs attributes
+        f['obs'].attrs['encoding-type'] = 'dataframe'
+        f['obs'].attrs['encoding-version'] = '0.2.0'
+        f['obs'].attrs['_index'] = '_index'
+        f['obs'].attrs['column-order'] = []
+
+        # var attributes
+        f['var'].attrs['encoding-type'] = 'dataframe'
+        f['var'].attrs['encoding-version'] = '0.2.0'
+        f['var'].attrs['_index'] = '_index'
+        f['var'].attrs['column-order'] = []
+
+    if verbose:
+        size_mb = path.stat().st_size / (1024 * 1024)
+        print(f"  File size: {size_mb:.2f} MB")
+        print(f"\nPython usage:")
+        print(f"  import anndata")
+        print(f"  adata = anndata.read_h5ad('{path.name}')")
+        print(f"  beta = adata.X  # ({n_samples} × {n_features})")
+        print(f"  zscore = adata.obsm['zscore']")
 
 
 # =============================================================================
