@@ -396,6 +396,7 @@ def secact_activity(
     min_genes: int = 10,
     use_gsl_rng: bool = True,
     use_cache: bool = False,
+    batch_size: Optional[int] = None,
     verbose: bool = False
 ) -> dict[str, Any]:
     """
@@ -531,17 +532,33 @@ def secact_activity(
     if verbose:
         print(f"  Running ridge regression (n_rand={n_rand})...")
 
-    ridge_result = ridge(
-        X=X,
-        Y=Y,
-        lambda_=lambda_,
-        n_rand=n_rand,
-        seed=seed,
-        backend=backend,
-        use_gsl_rng=use_gsl_rng,
-        use_cache=use_cache,
-        verbose=verbose
-    )
+    # Use batch processing if batch_size is specified
+    if batch_size is not None:
+        from .ridge import ridge_batch
+        ridge_result = ridge_batch(
+            X=X,
+            Y=Y,
+            lambda_=lambda_,
+            n_rand=n_rand,
+            seed=seed,
+            batch_size=batch_size,
+            backend=backend,
+            use_gsl_rng=use_gsl_rng,
+            use_cache=use_cache,
+            verbose=verbose
+        )
+    else:
+        ridge_result = ridge(
+            X=X,
+            Y=Y,
+            lambda_=lambda_,
+            n_rand=n_rand,
+            seed=seed,
+            backend=backend,
+            use_gsl_rng=use_gsl_rng,
+            use_cache=use_cache,
+            verbose=verbose
+        )
 
     # --- Format Results as DataFrames ---
     if verbose:
@@ -837,6 +854,7 @@ def secact_activity_inference(
     backend: str = "numpy",
     use_gsl_rng: bool = True,
     use_cache: bool = False,
+    batch_size: Optional[int] = None,
     sort_genes: bool = False,
     verbose: bool = True
 ) -> dict[str, pd.DataFrame]:
@@ -1042,17 +1060,33 @@ def secact_activity_inference(
     if verbose:
         print(f"  Running ridge regression (n_rand={n_rand})...")
 
-    result = ridge(
-        X=X_scaled.values,
-        Y=Y_scaled.values,
-        lambda_=lambda_,
-        n_rand=n_rand,
-        seed=seed,
-        backend=backend,
-        use_gsl_rng=use_gsl_rng,
-        use_cache=use_cache,
-        verbose=False
-    )
+    # Use batch processing if batch_size is specified
+    if batch_size is not None:
+        from .ridge import ridge_batch
+        result = ridge_batch(
+            X=X_scaled.values,
+            Y=Y_scaled.values,
+            lambda_=lambda_,
+            n_rand=n_rand,
+            seed=seed,
+            batch_size=batch_size,
+            backend=backend,
+            use_gsl_rng=use_gsl_rng,
+            use_cache=use_cache,
+            verbose=False
+        )
+    else:
+        result = ridge(
+            X=X_scaled.values,
+            Y=Y_scaled.values,
+            lambda_=lambda_,
+            n_rand=n_rand,
+            seed=seed,
+            backend=backend,
+            use_gsl_rng=use_gsl_rng,
+            use_cache=use_cache,
+            verbose=False
+        )
 
     # --- Step 10: Create DataFrames with proper labels ---
     feature_names = X_scaled.columns.tolist()
@@ -1095,7 +1129,7 @@ def secact_activity_inference(
 # =============================================================================
 
 def secact_activity_inference_scrnaseq(
-    adata,
+    adata: Union[Any, str, Path],
     cell_type_col: str,
     sig_matrix: str = "secact",
     is_single_cell_level: bool = False,
@@ -1108,6 +1142,7 @@ def secact_activity_inference_scrnaseq(
     backend: str = "auto",
     use_gsl_rng: bool = True,
     use_cache: bool = False,
+    batch_size: Optional[int] = None,
     sort_genes: bool = False,
     verbose: bool = False
 ) -> dict[str, Any]:
@@ -1119,8 +1154,9 @@ def secact_activity_inference_scrnaseq(
 
     Parameters
     ----------
-    adata : AnnData
-        AnnData object with raw counts in adata.raw.X or adata.X.
+    adata : AnnData or str
+        AnnData object with raw counts in adata.raw.X or adata.X,
+        or path to .h5ad file.
         Gene names in adata.var_names or adata.raw.var_names.
     cell_type_col : str
         Column name in adata.obs containing cell type annotations.
@@ -1185,11 +1221,21 @@ def secact_activity_inference_scrnaseq(
             "scipy is required for scRNAseq analysis. "
             "Install with: pip install scipy"
         )
+    import anndata as ad
     from scipy import sparse
 
     if verbose:
         print("SecActPy scRNAseq Activity Inference")
         print("=" * 50)
+
+    # --- Step 0: Load AnnData if path is provided ---
+    if isinstance(adata, (str, Path)):
+        adata_path = str(adata)
+        if verbose:
+            print(f"  Loading: {adata_path}")
+        adata = ad.read_h5ad(adata_path)
+        if verbose:
+            print(f"  Loaded: {adata.shape[0]} cells × {adata.shape[1]} genes")
 
     # --- Step 1: Extract count matrix ---
     # AnnData stores as (cells × genes), we need (genes × cells) like R
@@ -1329,6 +1375,7 @@ def secact_activity_inference_scrnaseq(
         backend=backend,
         use_gsl_rng=use_gsl_rng,
         use_cache=use_cache,
+        batch_size=batch_size,
         sort_genes=sort_genes,
         verbose=verbose
     )
@@ -1520,6 +1567,7 @@ def secact_activity_inference_st(
     backend: str = "auto",
     use_gsl_rng: bool = True,
     use_cache: bool = False,
+    batch_size: Optional[int] = None,
     sort_genes: bool = False,
     verbose: bool = False
 ) -> dict[str, Any]:
@@ -1616,13 +1664,26 @@ def secact_activity_inference_st(
     adata_obs = None
 
     # --- Step 1: Load/extract count matrix ---
-    if isinstance(input_data, str):
-        # Path to Visium folder
-        data = load_visium_10x(input_data, min_genes=min_genes, verbose=verbose)
-        counts = data['counts']
-        gene_names = data['gene_names']
-        spot_names = data['spot_names']
-    elif isinstance(input_data, dict) and 'counts' in input_data:
+    if isinstance(input_data, (str, Path)):
+        input_path = str(input_data)
+        # Check if it's an h5ad file or Visium folder
+        if input_path.endswith('.h5ad'):
+            import anndata as ad
+            if verbose:
+                print(f"  Loading: {input_path}")
+            input_data = ad.read_h5ad(input_path)
+            if verbose:
+                print(f"  Loaded: {input_data.shape[0]} cells × {input_data.shape[1]} genes")
+            # Fall through to AnnData handling below
+        else:
+            # Path to Visium folder
+            data = load_visium_10x(input_path, min_genes=min_genes, verbose=verbose)
+            counts = data['counts']
+            gene_names = data['gene_names']
+            spot_names = data['spot_names']
+            input_data = None  # Mark as handled
+
+    if isinstance(input_data, dict) and 'counts' in input_data:
         # Result from load_visium_10x
         counts = input_data['counts']
         gene_names = input_data['gene_names']
@@ -1632,7 +1693,7 @@ def secact_activity_inference_st(
         counts = input_data.values
         gene_names = list(input_data.index)
         spot_names = list(input_data.columns)
-    else:
+    elif input_data is not None:
         # Try to handle AnnData
         try:
             # AnnData stores (cells/spots × genes)
@@ -1646,7 +1707,7 @@ def secact_activity_inference_st(
                 adata_obs = input_data.obs
         except Exception:
             raise ValueError(
-                "input_data must be a path to Visium folder, dict from load_visium_10x(), "
+                "input_data must be a path to Visium folder, .h5ad file, dict from load_visium_10x(), "
                 "DataFrame (genes × spots), or AnnData object."
             )
 
@@ -1823,6 +1884,7 @@ def secact_activity_inference_st(
         backend=backend,
         use_gsl_rng=use_gsl_rng,
         use_cache=use_cache,
+        batch_size=batch_size,
         sort_genes=sort_genes,
         verbose=verbose
     )

@@ -30,6 +30,21 @@ import os
 from pathlib import Path
 
 
+# Detect CuPy/GPU availability at import time
+def _detect_gpu():
+    """Detect if CuPy and GPU are available."""
+    try:
+        import cupy as cp
+        # Try to actually use the GPU
+        cp.array([1, 2, 3])
+        return True
+    except Exception:
+        return False
+
+CUPY_AVAILABLE = _detect_gpu()
+DEFAULT_BACKEND = "cupy" if CUPY_AVAILABLE else "numpy"
+
+
 def setup_common_args(parser: argparse.ArgumentParser) -> None:
     """Add common arguments to a parser."""
     parser.add_argument(
@@ -70,8 +85,8 @@ def setup_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--backend",
         choices=["auto", "numpy", "cupy"],
-        default="auto",
-        help="Computation backend (default: auto)"
+        default=DEFAULT_BACKEND,
+        help=f"Computation backend (default: {DEFAULT_BACKEND})"
     )
     parser.add_argument(
         "--batch-size",
@@ -188,8 +203,8 @@ def cmd_scrnaseq(args: argparse.Namespace) -> int:
         n_rand=args.n_rand,
         seed=args.seed,
         backend=args.backend,
-        batch_size=args.batch_size,
         use_cache=args.use_cache,
+        batch_size=args.batch_size,
         verbose=verbose
     )
 
@@ -233,8 +248,8 @@ def cmd_visium(args: argparse.Namespace) -> int:
         n_rand=args.n_rand,
         seed=args.seed,
         backend=args.backend,
-        batch_size=args.batch_size,
         use_cache=args.use_cache,
+        batch_size=args.batch_size,
         verbose=verbose
     )
 
@@ -278,8 +293,8 @@ def cmd_cosmx(args: argparse.Namespace) -> int:
         n_rand=args.n_rand,
         seed=args.seed,
         backend=args.backend,
-        batch_size=args.batch_size,
         use_cache=args.use_cache,
+        batch_size=args.batch_size,
         verbose=verbose
     )
 
