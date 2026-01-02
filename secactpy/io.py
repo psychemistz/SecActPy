@@ -885,9 +885,6 @@ def save_results_to_h5ad(
         >>> beta = adata.X  # (samples × features)
         >>> zscore = adata.obsm['zscore']
     """
-    if not H5PY_AVAILABLE:
-        raise ImportError("h5py required. Install with: pip install h5py")
-
     path = Path(path)
 
     # Extract arrays
@@ -920,6 +917,90 @@ def save_results_to_h5ad(
     if path.exists():
         path.unlink()
 
+    # Prefer anndata when available (creates fully valid h5ad files)
+    if ANNDATA_AVAILABLE:
+        _save_with_anndata(
+            results, path, feature_names, sample_names, 
+            n_features, n_samples, compression, verbose
+        )
+    elif H5PY_AVAILABLE:
+        _save_with_h5py(
+            results, path, feature_names, sample_names,
+            n_features, n_samples, compression, verbose
+        )
+    else:
+        raise ImportError("Either anndata or h5py required. Install with: pip install anndata h5py")
+
+
+def _save_with_anndata(
+    results: dict[str, Any],
+    path: Path,
+    feature_names: List[str],
+    sample_names: List[str],
+    n_features: int,
+    n_samples: int,
+    compression: str,
+    verbose: bool
+) -> None:
+    """Save using anndata - creates fully valid h5ad files."""
+    import anndata
+    
+    # Get arrays and transpose to (samples × features)
+    beta = results['beta']
+    if hasattr(beta, 'values'):
+        beta = beta.values
+    X = beta.T.astype(np.float64)
+    
+    # Create AnnData object
+    adata = anndata.AnnData(X=X)
+    
+    # Set names
+    adata.obs_names = pd.Index(sample_names)
+    adata.var_names = pd.Index(feature_names)
+    
+    # Add obsm matrices
+    for name in ['se', 'zscore', 'pvalue']:
+        if name in results:
+            arr = results[name]
+            if hasattr(arr, 'values'):
+                arr = arr.values
+            arr_t = arr.T.astype(np.float64)
+            adata.obsm[name] = arr_t
+    
+    # Add uns metadata
+    adata.uns['source'] = 'SecActPy'
+    adata.uns['feature_names'] = list(feature_names)
+    
+    # Write file
+    adata.write_h5ad(path, compression=compression)
+    
+    if verbose:
+        size_mb = path.stat().st_size / (1024 * 1024)
+        print(f"  File size: {size_mb:.2f} MB")
+        print(f"\nPython usage:")
+        print(f"  import anndata")
+        print(f"  adata = anndata.read_h5ad('{path.name}')")
+        print(f"  beta = adata.X  # ({n_samples} × {n_features})")
+        print(f"  zscore = adata.obsm['zscore']")
+
+
+def _save_with_h5py(
+    results: dict[str, Any],
+    path: Path,
+    feature_names: List[str],
+    sample_names: List[str],
+    n_features: int,
+    n_samples: int,
+    compression: str,
+    verbose: bool
+) -> None:
+    """Save using h5py - fallback when anndata not available."""
+    import h5py
+    
+    beta = results['beta']
+    if hasattr(beta, 'values'):
+        beta = beta.values
+
     with h5py.File(path, 'w') as f:
         # Create groups
         f.create_group('obs')
@@ -948,25 +1029,27 @@ def save_results_to_h5ad(
         f.create_dataset('uns/feature_names', data=np.array(feature_names, dtype='S'))
         f['uns'].attrs['source'] = 'SecActPy'
 
-        # Add anndata compatibility attributes
+        # Add anndata compatibility attributes (minimal, for basic reading)
+        # Note: For full compatibility, use anndata to write the file
         f.attrs['encoding-type'] = 'anndata'
-        f.attrs['encoding-version'] = '0.8.0'
+        f.attrs['encoding-version'] = '0.1.0'
 
         # obs attributes
         f['obs'].attrs['encoding-type'] = 'dataframe'
         f['obs'].attrs['encoding-version'] = '0.2.0'
         f['obs'].attrs['_index'] = '_index'
-        f['obs'].attrs['column-order'] = []
+        f['obs'].attrs['column-order'] = np.array([], dtype='S')
 
         # var attributes
         f['var'].attrs['encoding-type'] = 'dataframe'
         f['var'].attrs['encoding-version'] = '0.2.0'
         f['var'].attrs['_index'] = '_index'
-        f['var'].attrs['column-order'] = []
+        f['var'].attrs['column-order'] = np.array([], dtype='S')
 
     if verbose:
         size_mb = path.stat().st_size / (1024 * 1024)
         print(f"  File size: {size_mb:.2f} MB")
+        print(f"  (Note: h5py fallback used. For full compatibility, install anndata)")
         print(f"\nPython usage:")
         print(f"  import anndata")
         print(f"  adata = anndata.read_h5ad('{path.name}')")

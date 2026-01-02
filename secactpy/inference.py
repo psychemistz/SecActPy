@@ -1010,6 +1010,8 @@ def secact_activity_inference(
                 Y = pd.DataFrame({"Change": Y.mean(axis=1)})
 
     # --- Step 3: Filter signatures if requested ---
+    # sig_filter keeps only proteins whose names also appear as genes in expression data
+    # This is useful for panels like CosMx where only ~1000 genes are measured
     if sig_filter:
         n_before = X.shape[1]
         available_genes = set(Y.index)

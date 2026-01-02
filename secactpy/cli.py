@@ -100,6 +100,11 @@ def setup_common_args(parser: argparse.ArgumentParser) -> None:
         help="Cache permutation tables to disk"
     )
     parser.add_argument(
+        "--sort-genes",
+        action="store_true",
+        help="Sort genes alphabetically before ridge regression (for R reproducibility)"
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Verbose output"
@@ -136,11 +141,54 @@ def cmd_bulk(args: argparse.Namespace) -> int:
     if input_path.suffix in [".csv"]:
         expr = pd.read_csv(input_path, index_col=0)
     elif input_path.suffix in [".tsv", ".txt"]:
+        # Try tab-separated first
         expr = pd.read_csv(input_path, sep="\t", index_col=0)
+        
+        # If no columns (0 samples), try space-separated format
+        # This handles files like: "Diff\nGENE1 0.5\nGENE2 -0.3\n..."
+        if expr.shape[1] == 0:
+            if verbose:
+                print("Tab-separated parsing failed. Trying space-separated format...")
+            expr = pd.read_csv(input_path, sep=r"\s+", index_col=0)
+        
+        # Still no columns? Try without index_col (some formats have gene names as a column)
+        if expr.shape[1] == 0:
+            if verbose:
+                print("Trying alternative parsing without index_col...")
+            expr = pd.read_csv(input_path, sep=r"\s+")
+            # Use first column as index
+            if expr.shape[1] >= 1:
+                first_col = expr.columns[0]
+                expr = expr.set_index(first_col)
+                
     elif input_path.suffix in [".h5ad"]:
         import anndata
         adata = anndata.read_h5ad(input_path)
-        expr = adata.to_df().T  # cells x genes -> genes x cells
+        
+        # Check if file needs transposition
+        # Standard: obs=samples, var=genes -> to_df() gives (samples × genes) -> .T gives (genes × samples)
+        # Reversed: obs=genes, var=samples -> to_df() gives (genes × samples) -> .T gives (samples × genes)
+        
+        n_obs = adata.n_obs
+        n_var = adata.n_vars
+        
+        # Auto-detect: if obs >> var, likely obs=genes (reversed format)
+        # Or check if --transpose flag is set
+        transpose_input = getattr(args, 'transpose', False)
+        
+        if not transpose_input and n_obs > n_var and n_obs > 5000:
+            # Likely reversed format (obs=genes, var=samples)
+            if verbose:
+                print(f"  Auto-detected reversed format: obs={n_obs} (genes), var={n_var} (samples)")
+                print(f"  Using adata.to_df() directly (no transpose)")
+            expr = adata.to_df()  # (genes × samples) - already correct
+        elif transpose_input:
+            if verbose:
+                print(f"  --transpose flag set: using adata.to_df() directly")
+            expr = adata.to_df()  # User requested transpose
+        else:
+            # Standard format (obs=samples, var=genes)
+            expr = adata.to_df().T  # (samples × genes) -> (genes × samples)
     else:
         print(f"Error: Unsupported file format: {input_path.suffix}", file=sys.stderr)
         return 1
@@ -160,6 +208,7 @@ def cmd_bulk(args: argparse.Namespace) -> int:
         backend=args.backend,
         use_cache=args.use_cache,
         batch_size=args.batch_size,
+        sort_genes=args.sort_genes,
         verbose=verbose
     )
 
@@ -208,6 +257,7 @@ def cmd_scrnaseq(args: argparse.Namespace) -> int:
         backend=args.backend,
         use_cache=args.use_cache,
         batch_size=args.batch_size,
+        sort_genes=args.sort_genes,
         verbose=verbose
     )
 
@@ -254,6 +304,7 @@ def cmd_visium(args: argparse.Namespace) -> int:
         backend=args.backend,
         use_cache=args.use_cache,
         batch_size=args.batch_size,
+        sort_genes=args.sort_genes,
         verbose=verbose
     )
 
@@ -303,6 +354,7 @@ def cmd_cosmx(args: argparse.Namespace) -> int:
         backend=args.backend,
         use_cache=args.use_cache,
         batch_size=args.batch_size,
+        sort_genes=args.sort_genes,
         verbose=verbose
     )
 
@@ -328,80 +380,263 @@ def cmd_compare(args: argparse.Namespace) -> int:
     print(f"File 2: {args.file2}")
     print(f"Tolerance: {args.tolerance}")
     print(f"Sort indices: {args.sort}")
+    print(f"By position: {getattr(args, 'by_position', False)}")
     print("=" * 60)
     
-    # Try to load files
+    # Try to load files - handle R transposed format
     try:
-        import anndata as ad
+        import h5py
     except ImportError:
-        print("Error: anndata is required. Install with: pip install anndata")
+        print("Error: h5py is required. Install with: pip install h5py")
         return 1
     
+    def load_h5ad_flexible(filepath):
+        """Load H5AD file, handling both R and Python formats, dense and sparse."""
+        result = {}
+        
+        with h5py.File(filepath, 'r') as f:
+            # Check structure
+            keys = list(f.keys())
+            
+            # Try to get X matrix - handle both dense and sparse formats
+            if 'X' in f:
+                x_item = f['X']
+                if isinstance(x_item, h5py.Dataset):
+                    # Dense matrix
+                    result['X'] = x_item[:]
+                elif isinstance(x_item, h5py.Group):
+                    # Sparse matrix (CSR/CSC format from MuDataSeurat)
+                    # Check encoding type
+                    encoding = x_item.attrs.get('encoding-type', b'').decode('utf-8') if isinstance(x_item.attrs.get('encoding-type', b''), bytes) else x_item.attrs.get('encoding-type', '')
+                    
+                    if 'data' in x_item and 'indices' in x_item and 'indptr' in x_item:
+                        from scipy import sparse
+                        data = x_item['data'][:]
+                        indices = x_item['indices'][:]
+                        indptr = x_item['indptr'][:]
+                        shape = tuple(x_item.attrs.get('shape', []))
+                        
+                        if 'csr' in encoding.lower() or shape[0] == len(indptr) - 1:
+                            # CSR format
+                            sp_mat = sparse.csr_matrix((data, indices, indptr), shape=shape)
+                        else:
+                            # CSC format
+                            sp_mat = sparse.csc_matrix((data, indices, indptr), shape=shape)
+                        
+                        result['X'] = sp_mat.toarray()
+                    else:
+                        print(f"  Warning: Unknown sparse format in X group")
+                        result['X'] = None
+            
+            # Get obs/var names - handle different formats
+            def get_index(group_name):
+                if group_name not in f:
+                    return []
+                grp = f[group_name]
+                
+                # Try _index first
+                if '_index' in grp:
+                    idx = grp['_index'][:]
+                # Try index attribute
+                elif 'index' in grp.attrs:
+                    idx_name = grp.attrs['index']
+                    if isinstance(idx_name, bytes):
+                        idx_name = idx_name.decode('utf-8')
+                    if idx_name in grp:
+                        idx = grp[idx_name][:]
+                    else:
+                        idx = []
+                else:
+                    # Look for any dataset that might be the index
+                    for key in grp.keys():
+                        if key.startswith('_') or key == 'index':
+                            idx = grp[key][:]
+                            break
+                    else:
+                        idx = []
+                
+                if len(idx) > 0:
+                    if isinstance(idx[0], bytes):
+                        idx = [x.decode('utf-8') for x in idx]
+                    return list(idx)
+                return []
+            
+            result['obs_names'] = get_index('obs')
+            result['var_names'] = get_index('var')
+            
+            # Get obsm matrices (se, zscore, pvalue) - handle sparse
+            if 'obsm' in f:
+                for key in f['obsm'].keys():
+                    obsm_item = f[f'obsm/{key}']
+                    if isinstance(obsm_item, h5py.Dataset):
+                        result[f'obsm_{key}'] = obsm_item[:]
+                    elif isinstance(obsm_item, h5py.Group):
+                        # Sparse obsm
+                        if 'data' in obsm_item and 'indices' in obsm_item and 'indptr' in obsm_item:
+                            from scipy import sparse
+                            data = obsm_item['data'][:]
+                            indices = obsm_item['indices'][:]
+                            indptr = obsm_item['indptr'][:]
+                            shape = tuple(obsm_item.attrs.get('shape', []))
+                            sp_mat = sparse.csr_matrix((data, indices, indptr), shape=shape)
+                            result[f'obsm_{key}'] = sp_mat.toarray()
+            
+            # Check for reductions (Seurat/MuDataSeurat format)
+            if 'reductions' in f:
+                for key in f['reductions'].keys():
+                    red_path = f'reductions/{key}'
+                    # Check for cell.embeddings within each reduction
+                    if 'cell.embeddings' in f[red_path]:
+                        emb_item = f[f'{red_path}/cell.embeddings']
+                        if isinstance(emb_item, h5py.Dataset):
+                            result[f'obsm_{key}'] = emb_item[:]
+                        elif isinstance(emb_item, h5py.Group):
+                            if 'data' in emb_item and 'indices' in emb_item and 'indptr' in emb_item:
+                                from scipy import sparse
+                                data = emb_item['data'][:]
+                                indices = emb_item['indices'][:]
+                                indptr = emb_item['indptr'][:]
+                                shape = tuple(emb_item.attrs.get('shape', []))
+                                sp_mat = sparse.csr_matrix((data, indices, indptr), shape=shape)
+                                result[f'obsm_{key}'] = sp_mat.toarray()
+            
+            # Check for layers
+            if 'layers' in f:
+                for key in f['layers'].keys():
+                    layer_item = f[f'layers/{key}']
+                    if isinstance(layer_item, h5py.Dataset):
+                        result[f'layers_{key}'] = layer_item[:]
+                    elif isinstance(layer_item, h5py.Group):
+                        if 'data' in layer_item and 'indices' in layer_item and 'indptr' in layer_item:
+                            from scipy import sparse
+                            data = layer_item['data'][:]
+                            indices = layer_item['indices'][:]
+                            indptr = layer_item['indptr'][:]
+                            shape = tuple(layer_item.attrs.get('shape', []))
+                            sp_mat = sparse.csr_matrix((data, indices, indptr), shape=shape)
+                            result[f'layers_{key}'] = sp_mat.toarray()
+        
+        return result
+    
+    # Load both files
     try:
-        adata1 = ad.read_h5ad(args.file1)
-        print(f"\nFile 1 loaded: {adata1.shape}")
+        data1 = load_h5ad_flexible(args.file1)
+        n_obs1 = len(data1.get('obs_names', []))
+        n_var1 = len(data1.get('var_names', []))
+        x_shape1 = data1.get('X', np.array([])).shape
+        print(f"\nFile 1: obs={n_obs1}, var={n_var1}, X.shape={x_shape1}")
+        
+        # Show all keys found (for debugging)
+        obsm_keys1 = [k.replace('obsm_', '') for k in data1.keys() if k.startswith('obsm_')]
+        layers_keys1 = [k.replace('layers_', '') for k in data1.keys() if k.startswith('layers_')]
+        if obsm_keys1:
+            print(f"  obsm keys: {obsm_keys1}")
+        if layers_keys1:
+            print(f"  layers keys: {layers_keys1}")
+            
+        # If verbose, show raw h5 structure
+        if args.verbose:
+            with h5py.File(args.file1, 'r') as f:
+                def print_h5_structure(name, obj):
+                    if isinstance(obj, h5py.Group):
+                        print(f"    [G] {name}/")
+                    else:
+                        print(f"    [D] {name}: {obj.shape if hasattr(obj, 'shape') else '?'}")
+                print("  H5 structure:")
+                f.visititems(print_h5_structure)
     except Exception as e:
         print(f"Error loading file 1: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
     
     try:
-        adata2 = ad.read_h5ad(args.file2)
-        print(f"File 2 loaded: {adata2.shape}")
+        data2 = load_h5ad_flexible(args.file2)
+        n_obs2 = len(data2.get('obs_names', []))
+        n_var2 = len(data2.get('var_names', []))
+        x_shape2 = data2.get('X', np.array([])).shape
+        print(f"File 2: obs={n_obs2}, var={n_var2}, X.shape={x_shape2}")
+        
+        # Show all keys found
+        obsm_keys2 = [k.replace('obsm_', '') for k in data2.keys() if k.startswith('obsm_')]
+        layers_keys2 = [k.replace('layers_', '') for k in data2.keys() if k.startswith('layers_')]
+        if obsm_keys2:
+            print(f"  obsm keys: {obsm_keys2}")
+        if layers_keys2:
+            print(f"  layers keys: {layers_keys2}")
     except Exception as e:
         print(f"Error loading file 2: {e}")
         return 1
     
-    # Check shapes
-    if adata1.shape != adata2.shape:
-        print(f"\n❌ Shape mismatch: {adata1.shape} vs {adata2.shape}")
-        return 1
+    # Detect if files need transposition alignment
+    # Check if one file is transposed relative to the other
+    r_format1 = False
+    r_format2 = False
     
-    print(f"\n✓ Shapes match: {adata1.shape}")
+    # R format: obs=proteins (few), var=cells (many), X=(var×obs)=(cells×proteins)
+    # The X data is already in correct shape, just metadata is swapped
+    # Python format: obs=cells (many), var=proteins (few), X=(obs×var)=(cells×proteins)
+    if n_obs1 < 2000 and n_var1 > 10000:
+        print(f"  File 1: R format (obs=proteins, var=cells)")
+        r_format1 = True
+    if n_obs2 < 2000 and n_var2 > 10000:
+        print(f"  File 2: R format (obs=proteins, var=cells)")
+        r_format2 = True
     
-    # If --sort, align data by indices
-    if args.sort:
-        print("\nSorting indices for alignment...")
+    # Extract and align matrices
+    def get_aligned_matrix(data, name, is_r_format):
+        """Get matrix with consistent orientation (cells × proteins).
         
-        # Get common var_names and obs_names
-        common_vars = sorted(set(adata1.var_names) & set(adata2.var_names))
-        common_obs = sorted(set(adata1.obs_names) & set(adata2.obs_names))
+        For R format: obs=proteins, var=cells, X=(var×obs)=(cells×proteins)
+        For Python format: obs=cells, var=proteins, X=(obs×var)=(cells×proteins)
         
-        if len(common_vars) != len(adata1.var_names) or len(common_vars) != len(adata2.var_names):
-            print(f"  Warning: var_names differ. Using {len(common_vars)} common features.")
-        if len(common_obs) != len(adata1.obs_names) or len(common_obs) != len(adata2.obs_names):
-            print(f"  Warning: obs_names differ. Using {len(common_obs)} common samples.")
+        Both have X in same orientation, just different metadata interpretation.
+        """
+        # Define possible names for each matrix type
+        name_variants = {
+            'beta': ['X', 'beta'],
+            'se': ['se', 'SE', 'SE_', 'X_se'],
+            'zscore': ['zscore', 'Z', 'Z_', 'X_zscore'],
+            'pvalue': ['pvalue', 'P', 'P_', 'X_pvalue']
+        }
         
-        # Subset and reorder
-        adata1 = adata1[common_obs, common_vars].copy()
-        adata2 = adata2[common_obs, common_vars].copy()
+        mat = None
         
-        print(f"  Aligned shape: {adata1.shape}")
-    
-    # Helper function to extract matrix
-    def get_matrix(adata, name):
-        """Extract matrix from various locations in AnnData."""
-        if name == 'beta':
-            # Beta could be in X, layers['beta'], or obsm['beta']
-            if 'beta' in adata.layers:
-                return adata.layers['beta']
-            elif 'beta' in adata.obsm:
-                return adata.obsm['beta']
-            else:
-                return adata.X
-        elif name in adata.layers:
-            return adata.layers[name]
-        elif name in adata.obsm:
-            return adata.obsm[name]
-        return None
+        if name == 'beta' or name == 'X':
+            mat = data.get('X')
+        else:
+            # Try different possible names
+            variants = name_variants.get(name, [name])
+            for variant in variants:
+                if f'obsm_{variant}' in data:
+                    mat = data[f'obsm_{variant}']
+                    break
+                elif f'layers_{variant}' in data:
+                    mat = data[f'layers_{variant}']
+                    break
+        
+        if mat is None:
+            return None, None, None
+        
+        if is_r_format:
+            # R format: X is (var × obs) = (cells × proteins)
+            # Don't transpose, just swap name interpretation
+            row_names = data.get('var_names', [])   # cells (from var)
+            col_names = data.get('obs_names', [])   # proteins (from obs)
+        else:
+            # Python format: X is (obs × var) = (cells × proteins)
+            row_names = data.get('obs_names', [])   # cells
+            col_names = data.get('var_names', [])   # proteins
+        
+        return mat, row_names, col_names
     
     # Compare matrices
     matrices_to_compare = ['beta', 'se', 'zscore', 'pvalue']
     all_identical = True
-    results = []
     
     for name in matrices_to_compare:
-        mat1 = get_matrix(adata1, name)
-        mat2 = get_matrix(adata2, name)
+        mat1, rows1, cols1 = get_aligned_matrix(data1, name, r_format1)
+        mat2, rows2, cols2 = get_aligned_matrix(data2, name, r_format2)
         
         if mat1 is None and mat2 is None:
             print(f"\n{name}: Not found in either file (skipping)")
@@ -415,19 +650,62 @@ def cmd_compare(args: argparse.Namespace) -> int:
             all_identical = False
             continue
         
-        # Convert to dense if sparse
-        if hasattr(mat1, 'toarray'):
-            mat1 = mat1.toarray()
-        if hasattr(mat2, 'toarray'):
-            mat2 = mat2.toarray()
-        
         mat1 = np.asarray(mat1, dtype=np.float64)
         mat2 = np.asarray(mat2, dtype=np.float64)
         
-        if mat1.shape != mat2.shape:
-            print(f"\n❌ {name}: Shape mismatch {mat1.shape} vs {mat2.shape}")
-            all_identical = False
-            continue
+        by_position = getattr(args, 'by_position', False)
+        
+        # If --by-position, compare by position (ignoring names)
+        # But if proteins are same set, align them first
+        if by_position:
+            # Check if shapes match
+            if mat1.shape != mat2.shape:
+                print(f"\n❌ {name}: Shape mismatch {mat1.shape} vs {mat2.shape}")
+                all_identical = False
+                continue
+            
+            # If proteins are same set but different order, align by protein names only
+            if len(cols1) > 0 and len(cols2) > 0 and set(cols1) == set(cols2) and cols1 != cols2:
+                # Sort columns (proteins) alphabetically in both
+                col_order1 = np.argsort(cols1)
+                col_order2 = np.argsort(cols2)
+                mat1 = mat1[:, col_order1]
+                mat2 = mat2[:, col_order2]
+                print(f"\n{name} (aligned proteins by name, cells by position):")
+            else:
+                print(f"\n{name} (by position):")
+        # If --sort, align by indices
+        elif args.sort and len(rows1) > 0 and len(rows2) > 0 and len(cols1) > 0 and len(cols2) > 0:
+            common_rows = sorted(set(rows1) & set(rows2))
+            common_cols = sorted(set(cols1) & set(cols2))
+            
+            if len(common_rows) == 0 or len(common_cols) == 0:
+                print(f"\n❌ {name}: No common rows/cols after sorting")
+                all_identical = False
+                continue
+            
+            # Create index maps
+            row_idx1 = {r: i for i, r in enumerate(rows1)}
+            row_idx2 = {r: i for i, r in enumerate(rows2)}
+            col_idx1 = {c: i for i, c in enumerate(cols1)}
+            col_idx2 = {c: i for i, c in enumerate(cols2)}
+            
+            # Extract aligned submatrices
+            ridx1 = [row_idx1[r] for r in common_rows]
+            ridx2 = [row_idx2[r] for r in common_rows]
+            cidx1 = [col_idx1[c] for c in common_cols]
+            cidx2 = [col_idx2[c] for c in common_cols]
+            
+            mat1 = mat1[np.ix_(ridx1, cidx1)]
+            mat2 = mat2[np.ix_(ridx2, cidx2)]
+            
+            print(f"\n{name} (aligned to {len(common_rows)}×{len(common_cols)}):")
+        else:
+            if mat1.shape != mat2.shape:
+                print(f"\n❌ {name}: Shape mismatch {mat1.shape} vs {mat2.shape}")
+                all_identical = False
+                continue
+            print(f"\n{name}:")
         
         # Compute differences
         diff = mat1 - mat2
@@ -436,7 +714,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
         max_diff = np.nanmax(abs_diff)
         mean_diff = np.nanmean(abs_diff)
         
-        # Correlation (flatten)
+        # Correlation
         valid = ~(np.isnan(mat1.flatten()) | np.isnan(mat2.flatten()))
         if valid.sum() > 1:
             corr = np.corrcoef(mat1.flatten()[valid], mat2.flatten()[valid])[0, 1]
@@ -450,8 +728,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
         is_identical = max_diff <= args.tolerance
         
         status = "✓" if is_identical else "❌"
-        print(f"\n{status} {name}:")
-        print(f"    Shape:       {mat1.shape}")
+        print(f"  {status} Shape:       {mat1.shape}")
         print(f"    Max diff:    {max_diff:.2e}")
         print(f"    Mean diff:   {mean_diff:.2e}")
         print(f"    RMSE:        {rmse:.2e}")
@@ -464,56 +741,46 @@ def cmd_compare(args: argparse.Namespace) -> int:
             print(f"    Max diff at: {max_idx}")
             print(f"    File 1 val:  {mat1[max_idx]:.10f}")
             print(f"    File 2 val:  {mat2[max_idx]:.10f}")
-            
-            # Show sample/feature names at max diff location
-            if args.verbose:
-                obs_name = adata1.obs_names[max_idx[0]]
-                var_name = adata1.var_names[max_idx[1]] if len(max_idx) > 1 else "N/A"
-                print(f"    Location:    obs='{obs_name}', var='{var_name}'")
-        
-        results.append({
-            'name': name,
-            'max_diff': max_diff,
-            'mean_diff': mean_diff,
-            'rmse': rmse,
-            'corr': corr,
-            'identical': is_identical
-        })
     
-    # Compare indices (var_names, obs_names)
+    # Compare sample/feature names
     print("\n" + "-" * 40)
     print("Index comparison:")
     
-    # var_names (features/proteins)
-    var1 = list(adata1.var_names)
-    var2 = list(adata2.var_names)
-    if var1 == var2:
-        print(f"  ✓ var_names match ({len(var1)} features)")
+    # Get canonical names (cells and proteins) based on format
+    if r_format1:
+        cells1, proteins1 = data1.get('var_names', []), data1.get('obs_names', [])
     else:
-        print(f"  ❌ var_names differ")
-        if set(var1) == set(var2):
-            print(f"    Same set, different order")
-        else:
-            only1 = set(var1) - set(var2)
-            only2 = set(var2) - set(var1)
-            if only1:
-                print(f"    Only in file 1: {list(only1)[:5]}...")
-            if only2:
-                print(f"    Only in file 2: {list(only2)[:5]}...")
-        if not args.sort:
-            all_identical = False
+        cells1, proteins1 = data1.get('obs_names', []), data1.get('var_names', [])
     
-    # obs_names (samples/cells)
-    obs1 = list(adata1.obs_names)
-    obs2 = list(adata2.obs_names)
-    if obs1 == obs2:
-        print(f"  ✓ obs_names match ({len(obs1)} samples)")
+    if r_format2:
+        cells2, proteins2 = data2.get('var_names', []), data2.get('obs_names', [])
     else:
-        print(f"  ❌ obs_names differ")
-        if set(obs1) == set(obs2):
-            print(f"    Same set, different order")
-        if not args.sort:
-            all_identical = False
+        cells2, proteins2 = data2.get('obs_names', []), data2.get('var_names', [])
+    
+    # Compare cells
+    if cells1 == cells2:
+        print(f"  ✓ cells match ({len(cells1)} samples)")
+    else:
+        if set(cells1) == set(cells2):
+            print(f"  ⚠ cells: same set, different order ({len(cells1)} samples)")
+        else:
+            common = set(cells1) & set(cells2)
+            print(f"  ❌ cells differ: {len(cells1)} vs {len(cells2)}, {len(common)} common")
+            if len(cells1) == len(cells2) == 1:
+                print(f"       File 1: {cells1}")
+                print(f"       File 2: {cells2}")
+                if not getattr(args, 'by_position', False):
+                    print(f"       Tip: Use --by-position to compare by position (ignoring cell names)")
+    
+    # Compare proteins
+    if proteins1 == proteins2:
+        print(f"  ✓ proteins match ({len(proteins1)} features)")
+    else:
+        if set(proteins1) == set(proteins2):
+            print(f"  ⚠ proteins: same set, different order ({len(proteins1)} features)")
+        else:
+            common = set(proteins1) & set(proteins2)
+            print(f"  ❌ proteins differ: {len(proteins1)} vs {len(proteins2)}, {len(common)} common")
     
     # Summary
     print("\n" + "=" * 60)
@@ -523,6 +790,266 @@ def cmd_compare(args: argparse.Namespace) -> int:
     else:
         print("❌ Files are DIFFERENT")
         return 1
+
+
+def cmd_convert(args: argparse.Namespace) -> int:
+    """Convert R-format H5AD to Python-compatible format."""
+    import numpy as np
+    import h5py
+    
+    print("=" * 60)
+    print("SecActPy - Convert R H5AD to Python Format")
+    print("=" * 60)
+    print(f"Input:  {args.input}")
+    print(f"Output: {args.output}")
+    print("=" * 60)
+    
+    def read_matrix(f, path):
+        """Read matrix from H5AD, handling both dense and sparse formats."""
+        if path not in f:
+            return None
+        
+        item = f[path]
+        if isinstance(item, h5py.Dataset):
+            # Dense matrix
+            return item[:]
+        elif isinstance(item, h5py.Group):
+            # Sparse matrix (CSR/CSC format)
+            if 'data' in item and 'indices' in item and 'indptr' in item:
+                from scipy import sparse
+                data = item['data'][:]
+                indices = item['indices'][:]
+                indptr = item['indptr'][:]
+                shape = tuple(item.attrs.get('shape', []))
+                
+                # Determine format from encoding-type or shape
+                encoding = item.attrs.get('encoding-type', b'')
+                if isinstance(encoding, bytes):
+                    encoding = encoding.decode('utf-8')
+                
+                if 'csr' in encoding.lower() or (shape and shape[0] == len(indptr) - 1):
+                    sp_mat = sparse.csr_matrix((data, indices, indptr), shape=shape)
+                else:
+                    sp_mat = sparse.csc_matrix((data, indices, indptr), shape=shape)
+                
+                return sp_mat.toarray()
+        return None
+    
+    def get_index(f, group_name):
+        """Get index from obs or var group, handling different formats."""
+        if group_name not in f:
+            return []
+        grp = f[group_name]
+        
+        # Try _index first
+        if '_index' in grp:
+            idx = grp['_index'][:]
+        # Try index attribute pointing to a dataset
+        elif 'index' in grp.attrs:
+            idx_name = grp.attrs['index']
+            if isinstance(idx_name, bytes):
+                idx_name = idx_name.decode('utf-8')
+            if idx_name in grp:
+                idx = grp[idx_name][:]
+            else:
+                idx = []
+        else:
+            # Look for any dataset that might be the index
+            idx = []
+            for key in grp.keys():
+                if key.startswith('_') or key == 'index':
+                    idx = grp[key][:]
+                    break
+        
+        if len(idx) > 0:
+            if isinstance(idx[0], bytes):
+                idx = [x.decode('utf-8') for x in idx]
+            return list(idx)
+        return []
+    
+    # Read R-format H5AD using h5py directly
+    with h5py.File(args.input, 'r') as f:
+        # Get X matrix
+        X = read_matrix(f, 'X')
+        if X is None:
+            print("Error: No X matrix found in file")
+            return 1
+        
+        print(f"\nOriginal X shape: {X.shape}")
+        
+        # Get indices
+        obs_names = get_index(f, 'obs')
+        var_names = get_index(f, 'var')
+        
+        print(f"obs_names: {len(obs_names)}")
+        print(f"var_names: {len(var_names)}")
+        
+        # Get obsm matrices
+        obsm = {}
+        if 'obsm' in f:
+            for key in f['obsm'].keys():
+                mat = read_matrix(f, f'obsm/{key}')
+                if mat is not None:
+                    obsm[key] = mat
+                    print(f"obsm/{key}: {mat.shape}")
+        
+        # Detect if transposed (R format: proteins as obs, cells as var)
+        # Python format: cells as obs, proteins as var
+        is_transposed = False
+        
+        # Heuristic 1: Check shape vs indices
+        if len(obs_names) > 0 and len(var_names) > 0:
+            if X.shape[0] == len(var_names) and X.shape[1] == len(obs_names):
+                is_transposed = True
+        
+        # Heuristic 2: If obs has few entries (proteins) and var has many (cells)
+        if len(obs_names) < 2000 and len(var_names) > 10000:
+            is_transposed = True
+        
+        if is_transposed:
+            print(f"\nDetected R format (proteins as obs, cells as var)")
+            print("Transposing to Python format (cells as obs, proteins as var)...")
+            
+            # Swap
+            X = X.T
+            obs_names, var_names = var_names, obs_names
+            
+            # Transpose obsm matrices too
+            for key in obsm:
+                obsm[key] = obsm[key].T
+            
+            print(f"New X shape: {X.shape}")
+        else:
+            print("\nFile appears to already be in Python format")
+    
+    # Write in Python-compatible format
+    print(f"\nWriting to: {args.output}")
+    
+    with h5py.File(args.output, 'w') as f:
+        # Create groups
+        f.create_group('obs')
+        f.create_group('var')
+        f.create_group('obsm')
+        f.create_group('uns')
+        
+        # Write X
+        f.create_dataset('X', data=X, compression='gzip')
+        
+        # Write indices
+        f.create_dataset('obs/_index', data=np.array(obs_names, dtype='S'))
+        f.create_dataset('var/_index', data=np.array(var_names, dtype='S'))
+        
+        # Write obsm
+        for key, arr in obsm.items():
+            f.create_dataset(f'obsm/{key}', data=arr, compression='gzip')
+        
+        # Add anndata compatibility attributes
+        f.attrs['encoding-type'] = 'anndata'
+        f.attrs['encoding-version'] = '0.8.0'
+        
+        f['obs'].attrs['encoding-type'] = 'dataframe'
+        f['obs'].attrs['encoding-version'] = '0.2.0'
+        f['obs'].attrs['_index'] = '_index'
+        f['obs'].attrs['column-order'] = []
+        
+        f['var'].attrs['encoding-type'] = 'dataframe'
+        f['var'].attrs['encoding-version'] = '0.2.0'
+        f['var'].attrs['_index'] = '_index'
+        f['var'].attrs['column-order'] = []
+    
+    print("\nDone! File can now be loaded with:")
+    print(f"  import anndata")
+    print(f"  adata = anndata.read_h5ad('{args.output}')")
+    print(f"  # Shape: ({len(obs_names)}, {len(var_names)}) = (cells × proteins)")
+    
+    return 0
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    """Inspect H5AD file structure."""
+    import numpy as np
+    import h5py
+    
+    print("=" * 60)
+    print("SecActPy - H5AD Inspector")
+    print("=" * 60)
+    print(f"File: {args.input}")
+    print("=" * 60)
+    
+    with h5py.File(args.input, 'r') as f:
+        print("\nFile structure:")
+        
+        def print_item(name, obj, indent=0):
+            prefix = "  " * indent
+            if isinstance(obj, h5py.Group):
+                print(f"{prefix}📁 {name}/")
+                # Print attributes
+                if obj.attrs:
+                    for attr_name, attr_val in obj.attrs.items():
+                        val_str = str(attr_val)[:50]
+                        print(f"{prefix}   @{attr_name}: {val_str}")
+            else:
+                shape_str = str(obj.shape) if hasattr(obj, 'shape') else '?'
+                dtype_str = str(obj.dtype) if hasattr(obj, 'dtype') else '?'
+                print(f"{prefix}📄 {name}: {shape_str} ({dtype_str})")
+        
+        # Print top-level items
+        for key in sorted(f.keys()):
+            item = f[key]
+            print_item(key, item, indent=0)
+            
+            if isinstance(item, h5py.Group):
+                for subkey in sorted(item.keys()):
+                    subitem = item[subkey]
+                    print_item(subkey, subitem, indent=1)
+                    
+                    if isinstance(subitem, h5py.Group) and args.verbose:
+                        for subsubkey in sorted(subitem.keys()):
+                            print_item(subsubkey, subitem[subsubkey], indent=2)
+        
+        # Summary
+        print("\n" + "-" * 40)
+        print("Summary:")
+        
+        # X shape
+        if 'X' in f:
+            x_item = f['X']
+            if isinstance(x_item, h5py.Dataset):
+                print(f"  X: {x_item.shape} (dense)")
+            elif isinstance(x_item, h5py.Group):
+                shape = x_item.attrs.get('shape', 'unknown')
+                print(f"  X: {tuple(shape)} (sparse)")
+        
+        # obs/var counts
+        def get_index_count(group_name):
+            if group_name not in f:
+                return 0
+            grp = f[group_name]
+            if '_index' in grp:
+                return len(grp['_index'])
+            return 0
+        
+        n_obs = get_index_count('obs')
+        n_var = get_index_count('var')
+        print(f"  obs (rows): {n_obs}")
+        print(f"  var (cols): {n_var}")
+        
+        # obsm keys
+        if 'obsm' in f:
+            obsm_keys = list(f['obsm'].keys())
+            print(f"  obsm keys: {obsm_keys}")
+        
+        # reductions keys
+        if 'reductions' in f:
+            red_keys = list(f['reductions'].keys())
+            print(f"  reductions keys: {red_keys}")
+        
+        # layers keys
+        if 'layers' in f:
+            layer_keys = list(f['layers'].keys())
+            print(f"  layers keys: {layer_keys}")
+    
+    return 0
 
 
 def main(argv=None) -> int:
@@ -566,6 +1093,12 @@ Examples:
   # Compare with different index ordering
   secactpy compare file1.h5ad file2.h5ad --sort -v
 
+  # Convert R-format H5AD to Python-compatible format
+  secactpy convert -i r_output.h5ad -o python_compatible.h5ad
+
+  # Inspect H5AD file structure (for debugging)
+  secactpy inspect -i file.h5ad -v
+
 For more information, visit: https://github.com/psychemistz/SecActPy
         """
     )
@@ -598,6 +1131,11 @@ For more information, visit: https://github.com/psychemistz/SecActPy
         "--sig-filter",
         action="store_true",
         help="Filter signatures by available genes"
+    )
+    bulk_parser.add_argument(
+        "--transpose",
+        action="store_true",
+        help="Transpose H5AD input (if genes are in obs instead of var)"
     )
     bulk_parser.set_defaults(func=cmd_bulk)
 
@@ -726,11 +1264,57 @@ For more information, visit: https://github.com/psychemistz/SecActPy
         help="Sort rows/columns before comparison (for different ordering)"
     )
     compare_parser.add_argument(
+        "--by-position",
+        action="store_true",
+        help="Compare by matrix position, ignoring cell/protein names (useful for single-sample)"
+    )
+    compare_parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Verbose output"
     )
     compare_parser.set_defaults(func=cmd_compare)
+
+    # Convert R H5AD to Python format
+    convert_parser = subparsers.add_parser(
+        "convert",
+        help="Convert R-format H5AD to Python-compatible format",
+        description="Convert H5AD files written by R to Python/anndata-compatible format"
+    )
+    convert_parser.add_argument(
+        "-i", "--input",
+        required=True,
+        help="Input H5AD file (R format)"
+    )
+    convert_parser.add_argument(
+        "-o", "--output",
+        required=True,
+        help="Output H5AD file (Python format)"
+    )
+    convert_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Verbose output"
+    )
+    convert_parser.set_defaults(func=cmd_convert)
+
+    # Inspect H5AD file structure
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help="Inspect H5AD file structure",
+        description="Show the internal structure of an H5AD file for debugging"
+    )
+    inspect_parser.add_argument(
+        "-i", "--input",
+        required=True,
+        help="Input H5AD file to inspect"
+    )
+    inspect_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show nested structure details"
+    )
+    inspect_parser.set_defaults(func=cmd_inspect)
 
     # Parse arguments
     args = parser.parse_args(argv)
@@ -747,7 +1331,7 @@ For more information, visit: https://github.com/psychemistz/SecActPy
         return 130
     except Exception as e:
         print(f"\nError: {e}", file=sys.stderr)
-        if args.verbose:
+        if getattr(args, 'verbose', False):
             import traceback
             traceback.print_exc()
         return 1
