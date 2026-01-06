@@ -18,23 +18,36 @@ Python implementation of [SecAct](https://github.com/data2intelligence/SecAct) f
 - 🧬 **Multi-Platform Support**: Bulk RNA-seq, scRNA-seq, and Spatial Transcriptomics (Visium, CosMx)
 - 💾 **Smart Caching**: Optional permutation table caching for faster repeated analyses
 - 🧮 **Sparse-Aware**: Automatic memory-efficient processing for sparse single-cell data
+- 📈 **Visualization** *(v0.2.0)*: Spatial plots, heatmaps, and cell-cell communication visualizations
+- 🗺️ **Spatial Analysis** *(v0.2.0)*: Colocalization, interface detection, and L-R network scoring
+- 📉 **Survival Analysis** *(v0.2.0)*: Cox regression and Kaplan-Meier integration
 
 ## Installation
 
 ### From PyPI (Recommended)
 
 ```bash
+# Core package
 pip install secactpy
+
+# With plotting support
+pip install "secactpy[plotting]"
+
+# With survival analysis
+pip install "secactpy[survival]"
+
+# With all optional features
+pip install "secactpy[all]"
 ```
 
 ### From GitHub
 
 ```bash
 # CPU Only
-pip install git+https://github.com/data2intelligence/SecActpy.git
+pip install git+https://github.com/data2intelligence/SecActPy.git
 
 # With GPU Support (CUDA 11.x)
-pip install "secactpy[gpu] @ git+https://github.com/data2intelligence/SecActpy.git"
+pip install "secactpy[gpu] @ git+https://github.com/data2intelligence/SecActPy.git"
 ```
 
 > **Note**: For CUDA 12.x, install CuPy separately: `pip install cupy-cuda12x`
@@ -42,8 +55,8 @@ pip install "secactpy[gpu] @ git+https://github.com/data2intelligence/SecActpy.g
 ### Development Installation
 
 ```bash
-git clone https://github.com/data2intelligence/SecActpy.git
-cd SecActpy
+git clone https://github.com/data2intelligence/SecActPy.git
+cd SecActPy
 pip install -e ".[dev]"
 ```
 
@@ -215,6 +228,209 @@ ridge_batch(
 | `output_path` | `None` | Stream results to H5AD file |
 | `output_compression` | `"gzip"` | Compression: "gzip", "lzf", or None |
 
+## Spatial Analysis (v0.2.0)
+
+SecActPy v0.2.0 introduces comprehensive spatial transcriptomics analysis tools.
+
+### Cell-Cell Colocalization
+
+```python
+from secactpy.spatial import calc_colocalization, calc_neighborhood_enrichment
+
+# Pairwise colocalization with permutation testing
+coloc = calc_colocalization(
+    cell_types, coords, radius=100,
+    method="jaccard", n_permutations=1000
+)
+print(coloc['score'])   # Colocalization matrix
+print(coloc['pvalue'])  # Significance
+
+# Neighborhood enrichment (squidpy-style)
+enrichment = calc_neighborhood_enrichment(cell_types, coords, n_neighbors=10)
+```
+
+### Spatial Statistics
+
+```python
+from secactpy.spatial import calc_morans_i, calc_getis_ord_g, calc_ripley_k
+
+# Moran's I spatial autocorrelation
+morans = calc_morans_i(gene_expr, coords, radius=100, n_permutations=999)
+print(f"Moran's I: {morans['I']:.3f}, p={morans['pvalue']:.4f}")
+
+# Hot spot detection (Getis-Ord G*)
+g_star = calc_getis_ord_g(gene_expr, coords, radius=100)
+hot_spots = g_star > 1.96  # p < 0.05
+
+# Ripley's K for clustering analysis
+radii = np.linspace(10, 200, 20)
+ripley = calc_ripley_k(cell_types, coords, radii, cell_type="Tumor")
+```
+
+### Tumor-Stroma Interface Detection
+
+```python
+from secactpy.spatial import detect_interface, analyze_interface_activity
+
+# Detect interface regions
+interface = detect_interface(
+    cell_types, coords,
+    tumor_types=["Tumor", "Malignant"],
+    stroma_types=["Fibroblast", "Endothelial"],
+    radius=100
+)
+
+# Analyze activity at interface
+results = analyze_interface_activity(activity, interface)
+significant = results[results['padj'] < 0.05]
+```
+
+### Ligand-Receptor Network Scoring
+
+```python
+from secactpy.spatial import load_lr_database, score_lr_interactions
+
+# Load L-R database
+lr_pairs = load_lr_database()  # Built-in CellChat-style pairs
+
+# Score interactions between cell types
+lr_scores = score_lr_interactions(
+    expression, coords, cell_types, lr_pairs,
+    radius=100
+)
+
+# Get significant interactions
+from secactpy.spatial import identify_significant_interactions
+significant = identify_significant_interactions(lr_scores, pvalue_threshold=0.05)
+```
+
+### Spatial Analysis Functions
+
+| Function | Description |
+|----------|-------------|
+| `calc_colocalization()` | Pairwise cell-type colocalization |
+| `calc_neighborhood_enrichment()` | Neighborhood enrichment analysis |
+| `calc_morans_i()` | Moran's I spatial autocorrelation |
+| `calc_getis_ord_g()` | Getis-Ord G* hot spot detection |
+| `calc_ripley_k()` | Ripley's K function |
+| `detect_interface()` | Tumor-stroma boundary detection |
+| `analyze_interface_activity()` | Differential activity at interface |
+| `load_lr_database()` | Load L-R interaction database |
+| `score_lr_interactions()` | Cell-type L-R interaction scoring |
+| `score_lr_spatial()` | Spot-level L-R scoring |
+
+## Visualization (v0.2.0)
+
+### Spatial Plots
+
+```python
+from secactpy.plotting import plot_spatial_feature, plot_spatial_categorical
+
+# Activity on spatial coordinates
+plot_spatial_feature(
+    coords, activity.loc['IL6'],
+    cmap='RdBu_r', center_zero=True,
+    title="IL6 Activity"
+)
+
+# Cell type visualization
+plot_spatial_categorical(coords, cell_types, palette='tab20')
+```
+
+### Activity Heatmaps
+
+```python
+from secactpy.plotting import plot_activity_heatmap, plot_activity_bar
+
+# Clustered heatmap
+g = plot_activity_heatmap(result['zscore'], title="Secreted Protein Activity")
+
+# Top activities bar plot
+plot_activity_bar(result['zscore']['Sample1'], n_top=20, n_bottom=10)
+```
+
+### Cell-Cell Communication Plots
+
+```python
+from secactpy.plotting import plot_ccc_heatmap, plot_ccc_circle
+
+# Sender-receiver heatmap
+plot_ccc_heatmap(interaction_scores, title="IL6 Signaling")
+
+# Circular network diagram
+plot_ccc_circle(interaction_matrix)
+```
+
+### Survival Analysis Plots
+
+```python
+from secactpy.plotting import plot_kaplan_meier, plot_survival_by_activity
+
+# Kaplan-Meier curves
+plot_kaplan_meier(time, event, groups=treatment_group)
+
+# Survival stratified by activity
+plot_survival_by_activity(
+    activity.loc['TNF'], time, event,
+    method='optimal'  # Find optimal cutoff
+)
+```
+
+### Plotting Functions
+
+| Function | Description |
+|----------|-------------|
+| `plot_spatial_feature()` | Feature values on coordinates |
+| `plot_spatial_categorical()` | Cell type labels on coordinates |
+| `plot_spatial_multi()` | Grid of multiple features |
+| `plot_activity_heatmap()` | Clustered activity heatmap |
+| `plot_activity_bar()` | Top/bottom activities bar plot |
+| `plot_ccc_heatmap()` | Cell-cell communication heatmap |
+| `plot_ccc_circle()` | Circular network diagram |
+| `plot_ccc_dotplot()` | Dot plot with size/color encoding |
+| `plot_kaplan_meier()` | Kaplan-Meier survival curves |
+| `plot_survival_by_activity()` | Survival by activity level |
+| `plot_forest()` | Forest plot of Cox results |
+
+## Utility Functions (v0.2.0)
+
+### Sparse Matrix Operations
+
+```python
+from secactpy.utils import sweep_sparse, normalize_sparse
+
+# R-style sweep for sparse matrices
+result = sweep_sparse(X, row_values, margin=0, operation='subtract')
+
+# Normalize sparse matrix (L1, L2, sum)
+X_norm = normalize_sparse(X, method='l1', axis=1)
+```
+
+### Gene Symbol Utilities
+
+```python
+from secactpy.utils import rm_duplicates, match_genes
+
+# Remove duplicate genes (keep highest sum)
+expr_clean = rm_duplicates(expression)
+
+# Case-insensitive gene matching
+matched = match_genes(query_genes, reference_genes)
+```
+
+### Survival Analysis
+
+```python
+from secactpy.utils import survival_analysis, coxph_best_separation
+
+# Batch survival analysis for all proteins
+results = survival_analysis(activity, time, event)
+significant = results[results['p'] < 0.05]
+
+# Cox PH with optimal threshold finding
+result = coxph_best_separation(activity.loc['IL6'], time, event)
+```
+
 ## GPU Acceleration
 
 ```python
@@ -342,7 +558,10 @@ result = secact_activity_inference(
 - anndata ≥ 0.8
 - scanpy ≥ 1.9
 
-**Optional:** CuPy ≥ 10.0 (GPU acceleration)
+**Optional:**
+- CuPy ≥ 10.0 (GPU acceleration)
+- matplotlib ≥ 3.5, seaborn ≥ 0.12 (plotting)
+- lifelines ≥ 0.27 (survival analysis)
 
 ## Citation
 
@@ -365,8 +584,25 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Changelog
 
-### v0.2.0 (Official Release)
-- Official release under data2intelligence organization
+### v0.2.0 (Current Release)
+**New Modules:**
+- **`secactpy.spatial`**: Spatial transcriptomics analysis
+  - Cell-cell colocalization (`calc_colocalization`, `calc_neighborhood_enrichment`)
+  - Spatial statistics (`calc_morans_i`, `calc_getis_ord_g`, `calc_ripley_k`)
+  - Tumor-stroma interface detection (`detect_interface`, `analyze_interface_activity`)
+  - Ligand-receptor network scoring (`score_lr_interactions`, `load_lr_database`)
+- **`secactpy.plotting`**: Visualization functions
+  - Spatial plots (`plot_spatial_feature`, `plot_spatial_categorical`)
+  - Activity heatmaps (`plot_activity_heatmap`, `plot_activity_bar`)
+  - Cell-cell communication plots (`plot_ccc_heatmap`, `plot_ccc_circle`)
+  - Survival plots (`plot_kaplan_meier`, `plot_survival_by_activity`)
+- **`secactpy.utils`**: Utility functions
+  - Sparse matrix operations (`sweep_sparse`, `normalize_sparse`)
+  - Gene symbol utilities (`rm_duplicates`, `match_genes`)
+  - Survival analysis (`survival_analysis`, `coxph_best_separation`)
+
+**Infrastructure:**
+- Official release under data2intelligence 
 - PyPI package available (`pip install secactpy`)
 - Comprehensive test suite and CI/CD pipeline
 - Docker images with GPU and R support

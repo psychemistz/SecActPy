@@ -233,12 +233,34 @@ except ImportError:
 
 try:
     from .spatial import (
+        # Weights (Phase 1)
         calc_spatial_weights,
         calc_spatial_weights_visium,
         row_normalize_weights,
         spatial_lag,
         get_neighbors,
         coords_to_distance_matrix,
+        # Colocalization (Phase 3)
+        calc_colocalization,
+        calc_neighborhood_enrichment,
+        calc_ripley_k,
+        calc_cross_ripley_k,
+        calc_morans_i,
+        calc_getis_ord_g,
+        # Interface (Phase 3)
+        detect_interface,
+        analyze_interface_activity,
+        extract_interface_profile,
+        find_interface_hotspots,
+        calc_interface_width,
+        # L-R Network (Phase 3)
+        load_lr_database,
+        score_lr_interactions,
+        score_lr_spatial,
+        calc_communication_probability,
+        aggregate_pathway_scores,
+        identify_significant_interactions,
+        compare_lr_conditions,
     )
     SPATIAL_AVAILABLE = True
 except ImportError:
@@ -249,6 +271,24 @@ except ImportError:
     spatial_lag = None
     get_neighbors = None
     coords_to_distance_matrix = None
+    calc_colocalization = None
+    calc_neighborhood_enrichment = None
+    calc_ripley_k = None
+    calc_cross_ripley_k = None
+    calc_morans_i = None
+    calc_getis_ord_g = None
+    detect_interface = None
+    analyze_interface_activity = None
+    extract_interface_profile = None
+    find_interface_hotspots = None
+    calc_interface_width = None
+    load_lr_database = None
+    score_lr_interactions = None
+    score_lr_spatial = None
+    calc_communication_probability = None
+    aggregate_pathway_scores = None
+    identify_significant_interactions = None
+    compare_lr_conditions = None
 
 try:
     from .plotting import (
@@ -389,12 +429,34 @@ __all__ = [
     # -------------------------------------------------------------------------
     # NEW in v0.2.0: Spatial (also available via secactpy.spatial)
     # -------------------------------------------------------------------------
+    # Weights
     "calc_spatial_weights",
     "calc_spatial_weights_visium",
     "row_normalize_weights",
     "spatial_lag",
     "get_neighbors",
     "coords_to_distance_matrix",
+    # Colocalization
+    "calc_colocalization",
+    "calc_neighborhood_enrichment",
+    "calc_ripley_k",
+    "calc_cross_ripley_k",
+    "calc_morans_i",
+    "calc_getis_ord_g",
+    # Interface detection
+    "detect_interface",
+    "analyze_interface_activity",
+    "extract_interface_profile",
+    "find_interface_hotspots",
+    "calc_interface_width",
+    # L-R network
+    "load_lr_database",
+    "score_lr_interactions",
+    "score_lr_spatial",
+    "calc_communication_probability",
+    "aggregate_pathway_scores",
+    "identify_significant_interactions",
+    "compare_lr_conditions",
     # -------------------------------------------------------------------------
     # NEW in v0.2.0: Plotting (also available via secactpy.plotting)
     # -------------------------------------------------------------------------
