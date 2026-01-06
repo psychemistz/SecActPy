@@ -12,6 +12,7 @@ Requirements:
 Usage:
     python tests/test_st_gpu.py              # Visium dataset, CPU vs GPU
     python tests/test_st_gpu.py --cosmx      # CosMx dataset, CPU vs GPU
+    python tests/test_st_gpu.py --input data.h5ad --reference ref.h5ad
     python tests/test_st_gpu.py --gpu-only   # GPU only, compare to R reference
     python tests/test_st_gpu.py --cosmx --gpu-only  # CosMx, GPU only
     python tests/test_st_gpu.py --save
@@ -69,26 +70,20 @@ GROUP_COR = 0.9
 # =============================================================================
 
 def load_r_output_h5ad(output_dir: Path) -> dict:
-    """
-    Load R output from h5ad file (fast).
-
-    Supports two formats:
-    1. New format: X=beta, obsm/{se,zscore,pvalue}
-    2. Old format: obsm/{beta,se,zscore,pvalue}
-
-    Returns dict with 'beta', 'se', 'zscore', 'pvalue' as DataFrames (proteins x cells).
-    """
-    # Try both possible filenames
+    """Load R output from h5ad file (fast)."""
     h5ad_path = output_dir / "output.h5ad"
     if not h5ad_path.exists():
         h5ad_path = output_dir / "results.h5ad"
     if not h5ad_path.exists():
-        return None
+        # Check if output_dir itself is an h5ad file
+        if output_dir.suffix == '.h5ad' and output_dir.exists():
+            h5ad_path = output_dir
+        else:
+            return None
 
     print(f"  Loading from h5ad: {h5ad_path}")
     start = time.time()
 
-    # Try anndata first (works for standard h5ad files)
     try:
         import anndata as ad
         adata = ad.read_h5ad(h5ad_path)
@@ -126,64 +121,6 @@ def load_r_output_h5ad(output_dir: Path) -> dict:
 
     except Exception as e:
         print(f"  anndata failed: {e}")
-        print("  Trying h5py fallback...")
-
-    # Fallback to h5py for non-standard structures
-    import h5py
-
-    try:
-        with h5py.File(h5ad_path, 'r') as f:
-            # Get protein names
-            if 'var/_index' in f:
-                protein_names = [x.decode() if isinstance(x, bytes) else x
-                                for x in f['var/_index'][:]]
-            elif 'uns/protein_names' in f:
-                protein_names = [x.decode() if isinstance(x, bytes) else x
-                                for x in f['uns/protein_names'][:]]
-            else:
-                print("  Warning: No protein names found in h5ad")
-                return None
-
-            # Get cell names
-            if 'obs/_index' in f:
-                cell_names = [x.decode() if isinstance(x, bytes) else x
-                             for x in f['obs/_index'][:]]
-            else:
-                print("  Warning: No cell names found in h5ad")
-                return None
-
-            print(f"    Proteins: {len(protein_names)}, Cells: {len(cell_names)}")
-
-            result = {}
-
-            # Try X for beta first (new format)
-            if 'X' in f:
-                arr = f['X'][:]
-                if arr.shape == (len(cell_names), len(protein_names)):
-                    arr = arr.T  # Transpose to (proteins, cells)
-                result['beta'] = pd.DataFrame(arr, index=protein_names, columns=cell_names)
-                print(f"    beta: {result['beta'].shape}")
-
-            # Other matrices from obsm (or beta if X wasn't found)
-            for name in ['beta', 'se', 'zscore', 'pvalue']:
-                if name == 'beta' and 'beta' in result:
-                    continue  # Already loaded from X
-
-                key = f'obsm/{name}'
-                if key in f:
-                    arr = f[key][:]
-                    if arr.shape == (len(cell_names), len(protein_names)):
-                        arr = arr.T
-                    result[name] = pd.DataFrame(arr, index=protein_names, columns=cell_names)
-                    print(f"    {name}: {result[name].shape}")
-
-        elapsed = time.time() - start
-        print(f"  Loaded in {elapsed:.1f}s")
-        return result if result else None
-
-    except Exception as e2:
-        print(f"  h5py fallback also failed: {e2}")
-        print("  Falling back to text files...")
         return None
 
 
@@ -207,18 +144,11 @@ def load_r_output_txt(output_dir: Path) -> dict:
 
 
 def load_r_output(output_dir: Path) -> dict:
-    """
-    Load R output files, preferring h5ad format if available.
-
-    To create h5ad from R outputs:
-        Rscript scripts/save_results_h5ad.R <output_dir>
-    """
-    # Try h5ad first (much faster)
+    """Load R output files, preferring h5ad format if available."""
     result = load_r_output_h5ad(output_dir)
     if result:
         return result
 
-    # Fall back to text files
     print("  H5AD not found, loading text files (slower)...")
     print("  Tip: Run 'Rscript scripts/save_results_h5ad.R <output_dir>' for faster loading")
     return load_r_output_txt(output_dir)
@@ -272,7 +202,6 @@ def compare_results(result1: dict, result2: dict, tolerance: float = 1e-8,
                 'message': f'Max diff: {max_diff:.2e} (n={n_compared:,})'
             }
         else:
-            # Find location of max diff
             max_idx = np.unravel_index(np.nanargmax(diff), diff.shape)
             max_row = common_rows[max_idx[0]]
             max_col = common_cols[max_idx[1]]
@@ -336,12 +265,17 @@ def load_cosmx_data(input_file, min_genes=50, verbose=True):
 # Main Test
 # =============================================================================
 
-def main(cosmx=False, gpu_only=False, save_output=False):
+def main(input_file=None, reference=None, cosmx=False, gpu_only=False, save_output=False):
     """
     Run GPU vs CPU comparison for spatial transcriptomics.
 
     Parameters
     ----------
+    input_file : str, optional
+        Path to input file. If None, uses default for platform.
+    reference : str, optional
+        Path to reference output (H5AD file or folder with TXT files).
+        If None, uses default reference directory.
     cosmx : bool, default=False
         If True, use CosMx dataset. If False, use Visium dataset.
     gpu_only : bool, default=False
@@ -381,17 +315,21 @@ def main(cosmx=False, gpu_only=False, save_output=False):
 
     # Set configuration based on platform
     if cosmx:
-        input_path = COSMX_INPUT
+        default_input = COSMX_INPUT
         output_dir = COSMX_OUTPUT
         min_genes = COSMX_MIN_GENES
         scale_factor = COSMX_SCALE_FACTOR
         sig_filter = True
     else:
-        input_path = VISIUM_INPUT
+        default_input = VISIUM_INPUT
         output_dir = VISIUM_OUTPUT
         min_genes = VISIUM_MIN_GENES
         scale_factor = VISIUM_SCALE_FACTOR
         sig_filter = False
+
+    # Determine input and reference paths
+    input_path = Path(input_file) if input_file is not None else default_input
+    reference_path = Path(reference) if reference is not None else output_dir
 
     # Load data based on platform
     print("\n2. Loading data...")
@@ -402,10 +340,10 @@ def main(cosmx=False, gpu_only=False, save_output=False):
     print(f"   Input: {input_path}")
 
     if cosmx:
-        input_data = load_cosmx_data(COSMX_INPUT, min_genes=min_genes, verbose=True)
+        input_data = load_cosmx_data(input_path, min_genes=min_genes, verbose=True)
         print(f"   Final shape: {input_data.shape} (genes × cells)")
     else:
-        input_data = load_visium_10x(VISIUM_INPUT, min_genes=min_genes, verbose=True)
+        input_data = load_visium_10x(input_path, min_genes=min_genes, verbose=True)
         print(f"   Spots: {len(input_data['spot_names'])}")
 
     # Check gene overlap with signature
@@ -425,28 +363,7 @@ def main(cosmx=False, gpu_only=False, save_output=False):
 
     if len(overlap) == 0:
         print("\n   ERROR: No overlapping genes!")
-        print(f"   Sample signature genes: {list(sig_genes)[:5]}")
-        print(f"   Sample data genes: {list(data_genes)[:5]}")
-
-        # Try case-insensitive matching
-        sig_genes_upper = {g.upper(): g for g in sig_genes}
-        data_genes_upper = {g.upper(): g for g in data_genes}
-        case_overlap = set(sig_genes_upper.keys()) & set(data_genes_upper.keys())
-
-        if len(case_overlap) > 0:
-            print(f"\n   Case-insensitive overlap: {len(case_overlap)}")
-            print("   Gene names may have case mismatch. Converting...")
-
-            gene_mapping = {data_genes_upper[g]: sig_genes_upper[g] for g in case_overlap}
-
-            if isinstance(input_data, pd.DataFrame):
-                input_data.index = [gene_mapping.get(g, g) for g in input_data.index]
-                data_genes = set(input_data.index)
-                overlap = sig_genes & data_genes
-                print(f"   New overlap: {len(overlap)}")
-
-        if len(overlap) == 0:
-            return False
+        return False
 
     step_num = 3
     cpu_time = None
@@ -468,8 +385,8 @@ def main(cosmx=False, gpu_only=False, save_output=False):
             seed=SEED,
             sig_filter=sig_filter,
             backend="numpy",
-            use_gsl_rng=True,  # Use GSL RNG for R compatibility
-            use_cache=True,  # Caches permutation table to disk
+            use_gsl_rng=True,
+            use_cache=True,
             verbose=False
         )
 
@@ -493,8 +410,8 @@ def main(cosmx=False, gpu_only=False, save_output=False):
         seed=SEED,
         sig_filter=sig_filter,
         backend="cupy",
-        use_gsl_rng=True,  # Use GSL RNG for R compatibility
-        use_cache=True,  # Caches permutation table to disk for faster repeated runs
+        use_gsl_rng=True,
+        use_cache=True,
         verbose=True
     )
 
@@ -511,12 +428,12 @@ def main(cosmx=False, gpu_only=False, save_output=False):
         print(f"\n{step_num}. Loading R reference output...")
         validate = True
 
-        if not output_dir.exists():
-            print(f"   Warning: Reference output not found: {output_dir}")
+        if not reference_path.exists():
+            print(f"   Warning: Reference output not found: {reference_path}")
             print("   Skipping validation.")
             validate = False
         else:
-            r_result = load_r_output(output_dir)
+            r_result = load_r_output(reference_path)
 
             if not r_result:
                 print("   Warning: No R output files found!")
@@ -650,9 +567,14 @@ Examples:
   # CosMx dataset, CPU vs GPU comparison
   python tests/test_st_gpu.py --cosmx
 
+  # Custom input file
+  python tests/test_st_gpu.py --input data.h5ad
+  python tests/test_st_gpu.py -i Visium_folder/
+
   # GPU only, compare to R reference
   python tests/test_st_gpu.py --gpu-only
   python tests/test_st_gpu.py --cosmx --gpu-only
+  python tests/test_st_gpu.py --gpu-only --reference ref.h5ad
 
   # Save results
   python tests/test_st_gpu.py --save
@@ -664,6 +586,18 @@ For faster R comparison with large datasets:
   # Then run the test (will auto-detect h5ad):
   python tests/test_st_gpu.py --cosmx --gpu-only
         """
+    )
+    parser.add_argument(
+        '--input', '-i',
+        dest='input_file',
+        default=None,
+        help='Path to input (H5AD file or Visium folder)'
+    )
+    parser.add_argument(
+        '--reference', '-r',
+        dest='reference',
+        default=None,
+        help='Path to R reference output (H5AD file or folder with TXT files)'
     )
     parser.add_argument(
         '--cosmx',
@@ -685,5 +619,11 @@ For faster R comparison with large datasets:
 
 if __name__ == "__main__":
     args = parse_args()
-    success = main(cosmx=args.cosmx, gpu_only=args.gpu_only, save_output=args.save)
+    success = main(
+        input_file=args.input_file,
+        reference=args.reference,
+        cosmx=args.cosmx,
+        gpu_only=args.gpu_only,
+        save_output=args.save
+    )
     sys.exit(0 if success else 1)
