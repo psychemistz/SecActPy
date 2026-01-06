@@ -1676,6 +1676,26 @@ def secact_activity_inference_st(
             input_data = ad.read_h5ad(input_path)
             if verbose:
                 print(f"  Loaded: {input_data.shape[0]} cells × {input_data.shape[1]} genes")
+            
+            # Apply min_genes filter to H5AD data
+            if min_genes > 0:
+                # Count expressed genes per cell/spot (genes > 0)
+                if sparse.issparse(input_data.X):
+                    genes_per_spot = np.asarray((input_data.X > 0).sum(axis=1)).ravel()
+                else:
+                    genes_per_spot = np.sum(input_data.X > 0, axis=1)
+                
+                keep_spots = genes_per_spot >= min_genes
+                n_removed = (~keep_spots).sum()
+                
+                if verbose:
+                    print(f"  Filtering: removing {n_removed} spots with < {min_genes} expressed genes")
+                
+                input_data = input_data[keep_spots, :].copy()
+                
+                if verbose:
+                    print(f"  After filter: {input_data.shape[0]} spots")
+            
             # Fall through to AnnData handling below
         else:
             # Path to Visium folder

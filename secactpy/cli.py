@@ -102,7 +102,7 @@ def setup_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--sort-genes",
         action="store_true",
-        help="Sort genes alphabetically before ridge regression (for R reproducibility)"
+        help="Sort genes alphabetically before ridge regression (NOT recommended for R compatibility)"
     )
     parser.add_argument(
         "-v", "--verbose",
