@@ -48,6 +48,10 @@ COSMX_INPUT = os.path.join(DATASET_DIR, "input", "LIHC_CosMx_data.h5ad")
 SCRNASEQ_FULL_INPUT = os.path.join(DATASET_DIR, "input", "OV_scRNAseq_data.h5ad")
 SCRNASEQ_CD4T_INPUT = os.path.join(DATASET_DIR, "input", "OV_scRNAseq_CD4.h5ad")
 
+# Visium dataset paths
+VISIUM_INPUT = os.path.join(DATASET_DIR, "input", "Visium_HCC")
+VISIUM_OUTPUT = os.path.join(DATASET_DIR, "output", "signature", "ST")
+
 # Reference output paths
 SCRNASEQ_CT_RES_FULL = os.path.join(DATASET_DIR, "output", "signature", "scRNAseq_ct_res")
 SCRNASEQ_CT_RES_CD4T = os.path.join(DATASET_DIR, "output", "signature", "scRNAseq_ct_res", "CD4T")
@@ -497,6 +501,114 @@ def test_cosmx(n_cells: int = None, use_gpu: bool = False, input_file: str = Non
     return passed
 
 
+def test_visium(input_file: str = None, reference: str = None, use_gpu: bool = False):
+    """Test batch vs non-batch for real Visium data."""
+    from secactpy import secact_activity_inference_st, load_visium_10x
+
+    print("\n" + "=" * 70)
+    print(f"VISIUM REAL DATA: {'(GPU)' if use_gpu else '(CPU)'}")
+    print("=" * 70)
+
+    backend = 'cupy' if use_gpu else 'numpy'
+
+    # Determine input path
+    input_path = input_file if input_file else VISIUM_INPUT
+    reference_path = reference if reference else VISIUM_OUTPUT
+
+    if not os.path.exists(input_path):
+        print(f"  ERROR: Visium input not found: {input_path}")
+        return False
+
+    print(f"\n  Input: {input_path}")
+
+    # Load data
+    print("\nLoading Visium data...")
+    input_data = load_visium_10x(input_path, min_genes=1000, verbose=True)
+    print(f"  Spots: {len(input_data['spot_names'])}")
+    print(f"  Genes: {len(input_data['gene_names'])}")
+
+    # Run inference
+    print(f"\nRunning SecActPy inference ({backend})...")
+    t1 = time.time()
+
+    result = secact_activity_inference_st(
+        input_data=input_data,
+        scale_factor=1e5,
+        sig_matrix="secact",
+        is_group_sig=True,
+        is_group_cor=0.9,
+        lambda_=LAMBDA,
+        n_rand=N_RAND,
+        seed=SEED,
+        sig_filter=False,
+        backend=backend,
+        use_gsl_rng=True,
+        use_cache=True,
+        verbose=True
+    )
+
+    t1 = time.time() - t1
+    print(f"  Time: {t1:.2f}s")
+    print(f"  Result shape: {result['beta'].shape}")
+
+    # Load reference if available
+    passed = True
+    if reference_path and os.path.exists(reference_path):
+        print(f"\nLoading reference from: {reference_path}")
+
+        import anndata as ad
+
+        # Check for h5ad or txt files
+        ref_h5ad = os.path.join(reference_path, "output.h5ad") if os.path.isdir(reference_path) else reference_path
+
+        if os.path.exists(ref_h5ad):
+            ref_adata = ad.read_h5ad(ref_h5ad)
+            r_beta = pd.DataFrame(
+                ref_adata.X.T,
+                index=list(ref_adata.var_names),
+                columns=list(ref_adata.obs_names)
+            )
+            print(f"  Reference shape: {r_beta.shape}")
+
+            # Compare
+            py_beta = result['beta']
+            common_proteins = py_beta.index.intersection(r_beta.index)
+            common_samples = py_beta.columns.intersection(r_beta.columns)
+
+            if len(common_proteins) > 0 and len(common_samples) > 0:
+                py_aligned = py_beta.loc[common_proteins, common_samples]
+                r_aligned = r_beta.loc[common_proteins, common_samples]
+
+                diff = np.abs(py_aligned.values - r_aligned.values)
+                max_diff = np.nanmax(diff)
+
+                # Correlation
+                py_flat = py_aligned.values.flatten()
+                r_flat = r_aligned.values.flatten()
+                valid = ~(np.isnan(py_flat) | np.isnan(r_flat))
+                if valid.sum() > 1:
+                    corr = np.corrcoef(py_flat[valid], r_flat[valid])[0, 1]
+                else:
+                    corr = np.nan
+
+                print(f"\n  Comparison with R reference:")
+                print(f"    Common proteins: {len(common_proteins)}")
+                print(f"    Common samples: {len(common_samples)}")
+                print(f"    Max diff: {max_diff:.2e}")
+                print(f"    Correlation: {corr:.10f}")
+
+                passed = corr > 0.9999 or max_diff < 1e-8
+                print(f"  {'✓ PASSED' if passed else '✗ FAILED'}")
+            else:
+                print("  Warning: No common proteins/samples for comparison")
+        else:
+            print(f"  Reference not found at: {ref_h5ad}")
+    else:
+        print(f"\n  Inference completed (no reference for comparison)")
+
+    return passed
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Batch vs Non-Batch Comparison Test",
@@ -524,6 +636,10 @@ Examples:
   # Test real scRNA-seq with custom input and reference
   python tests/test_batch_comp.py --scrnaseq-real -i data.h5ad -r ref_folder/
 
+  # Test Visium spatial transcriptomics
+  python tests/test_batch_comp.py --visium
+  python tests/test_batch_comp.py --visium -i Visium_folder/ -r ref.h5ad
+
   # Test CosMx data (GPU)
   python tests/test_batch_comp.py --cosmx --gpu
         """
@@ -533,6 +649,7 @@ Examples:
     parser.add_argument('--bulk', action='store_true', help='Test bulk RNA-seq (simulated)')
     parser.add_argument('--scrnaseq', action='store_true', help='Test scRNA-seq (simulated)')
     parser.add_argument('--scrnaseq-real', action='store_true', help='Test scRNA-seq (real data)')
+    parser.add_argument('--visium', action='store_true', help='Test real Visium spatial data')
     parser.add_argument('--cosmx', action='store_true', help='Test real CosMx data')
     parser.add_argument('--all', action='store_true', help='Run all simulated tests')
 
@@ -569,7 +686,7 @@ Examples:
         args.gpu = False
         args.gpu_only = False
 
-    if not any([args.bulk, args.scrnaseq, args.scrnaseq_real, args.cosmx, args.all]):
+    if not any([args.bulk, args.scrnaseq, args.scrnaseq_real, args.visium, args.cosmx, args.all]):
         args.all = True
 
     if args.clear_cache:
@@ -617,6 +734,12 @@ Examples:
                 single_cell=args.single_cell,
                 use_gpu=False
             )))
+        if args.visium:
+            results.append(("Visium (CPU)", test_visium(
+                input_file=args.input_file,
+                reference=args.reference,
+                use_gpu=False
+            )))
         if args.cosmx:
             results.append(("CosMx (CPU)", test_cosmx(args.n_cosmx, use_gpu=False, input_file=args.input_file)))
 
@@ -637,6 +760,12 @@ Examples:
                 reference=scrnaseq_ref,
                 cell_type_col=args.cell_type_col,
                 single_cell=args.single_cell,
+                use_gpu=True
+            )))
+        if args.visium:
+            results.append(("Visium (GPU)", test_visium(
+                input_file=args.input_file,
+                reference=args.reference,
                 use_gpu=True
             )))
         if args.cosmx:
