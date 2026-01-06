@@ -269,7 +269,8 @@ def scale_columns(
     centered = values - means
 
     if method == "zscore":
-        stds = np.nanstd(values, axis=0, keepdims=True)
+        # Use ddof=1 to match R's scale() function which uses sample std (n-1 denominator)
+        stds = np.nanstd(values, axis=0, keepdims=True, ddof=1)
         # Warn about near-zero std columns
         zero_std_mask = stds.ravel() < epsilon
         if zero_std_mask.any():
@@ -1242,6 +1243,10 @@ def secact_activity_inference_scrnaseq(
     # --- Step 1: Extract count matrix ---
     # AnnData stores as (cells × genes), we need (genes × cells) like R
     # Prefer raw counts if available
+    
+    # Determine which data layer to use
+    use_layer = None
+    
     if adata.raw is not None:
         counts_raw = adata.raw.X
         gene_names = list(adata.raw.var_names)
@@ -1250,8 +1255,26 @@ def secact_activity_inference_scrnaseq(
     else:
         counts_raw = adata.X
         gene_names = list(adata.var_names)
+        
+        # Check if data looks like counts or is already normalized
+        if hasattr(counts_raw, 'toarray'):
+            sample_data = counts_raw[:min(1000, counts_raw.shape[0]), :min(100, counts_raw.shape[1])].toarray()
+        else:
+            sample_data = counts_raw[:min(1000, counts_raw.shape[0]), :min(100, counts_raw.shape[1])]
+        
+        max_val = np.max(sample_data)
+        is_integer = np.allclose(sample_data[sample_data != 0], 
+                                  np.round(sample_data[sample_data != 0]))
+        
+        # Data with max < 20 and non-integer values is likely log-normalized
+        is_likely_normalized = max_val < 20 and not is_integer
+        
         if verbose:
             print(f"  Using adata.X: {counts_raw.shape} (cells × genes)")
+            if is_likely_normalized:
+                print(f"  WARNING: Data appears to be already normalized (max={max_val:.2f})")
+                print(f"           For accurate results, provide raw counts in adata.raw")
+                print(f"           Attempting to proceed with normalized data...")
 
     # Transpose to (genes × cells) to match R convention
     if sparse.issparse(counts_raw):
@@ -1306,32 +1329,76 @@ def secact_activity_inference_scrnaseq(
         print(f"  Genes: {n_genes}, Cells: {n_cells}")
         print(f"  Cell types: {len(set(cell_types))}")
 
+    # Check if data is already normalized (for later steps)
+    if hasattr(counts, 'toarray'):
+        sample_data = counts[:min(1000, counts.shape[0]), :min(100, counts.shape[1])].toarray()
+    else:
+        sample_data = counts[:min(1000, counts.shape[0]), :min(100, counts.shape[1])]
+    
+    max_val = np.max(sample_data)
+    nonzero = sample_data[sample_data != 0]
+    is_integer = len(nonzero) > 0 and np.allclose(nonzero, np.round(nonzero))
+    is_already_normalized = max_val < 20 and not is_integer
+
     # --- Step 4: Aggregate or normalize ---
     if not is_single_cell_level:
-        # Pseudo-bulk: sum counts by cell type, then TPM normalize
-        if verbose:
-            print("  Aggregating to pseudo-bulk by cell type...")
-
-        unique_cell_types = sorted(set(cell_types))
+        # R uses sort(unique(cellType_vec)) which is case-insensitive (locale-aware)
+        # Python's sorted() is case-sensitive by default, so we use key=str.lower
+        unique_cell_types = sorted(set(cell_types), key=str.lower)
         n_types = len(unique_cell_types)
 
-        # Sum counts per cell type
-        pseudo_bulk = np.zeros((n_genes, n_types), dtype=np.float64)
+        if is_already_normalized:
+            # Data is already log-normalized: take MEAN per cell type
+            if verbose:
+                print("  Aggregating to pseudo-bulk by cell type (mean, data pre-normalized)...")
+            
+            pseudo_bulk = np.zeros((n_genes, n_types), dtype=np.float64)
+            
+            for j, ct in enumerate(unique_cell_types):
+                mask = cell_types == ct
+                cell_idx = np.where(mask)[0]
+                
+                if sparse.issparse(counts):
+                    pseudo_bulk[:, j] = np.asarray(counts[:, cell_idx].mean(axis=1)).ravel()
+                else:
+                    pseudo_bulk[:, j] = counts[:, cell_idx].mean(axis=1)
+            
+            # Data is already normalized - use as-is
+            expr = pseudo_bulk
+            sample_names = unique_cell_types
+            
+            # Skip log transform (already done) - go directly to differential expression
+            row_means = expr.mean(axis=1, keepdims=True)
+            expr_diff = expr - row_means
+            
+        else:
+            # Raw counts: sum by cell type, then normalize
+            if verbose:
+                print("  Aggregating to pseudo-bulk by cell type (sum)...")
 
-        for j, ct in enumerate(unique_cell_types):
-            mask = cell_types == ct
-            cell_idx = np.where(mask)[0]
+            pseudo_bulk = np.zeros((n_genes, n_types), dtype=np.float64)
 
-            if sparse.issparse(counts):
-                pseudo_bulk[:, j] = np.asarray(counts[:, cell_idx].sum(axis=1)).ravel()
-            else:
-                pseudo_bulk[:, j] = counts[:, cell_idx].sum(axis=1)
+            for j, ct in enumerate(unique_cell_types):
+                mask = cell_types == ct
+                cell_idx = np.where(mask)[0]
 
-        # TPM normalize (counts per million)
-        col_sums = pseudo_bulk.sum(axis=0)
-        expr = pseudo_bulk / col_sums * 1e6
+                if sparse.issparse(counts):
+                    pseudo_bulk[:, j] = np.asarray(counts[:, cell_idx].sum(axis=1)).ravel()
+                else:
+                    pseudo_bulk[:, j] = counts[:, cell_idx].sum(axis=1)
 
-        sample_names = unique_cell_types
+            # TPM normalize (counts per million)
+            col_sums = pseudo_bulk.sum(axis=0)
+            expr = pseudo_bulk / col_sums * 1e6
+
+            sample_names = unique_cell_types
+            
+            # Log2 transform
+            expr = np.log2(expr + 1)
+            
+            # Compute differential expression (vs row mean)
+            row_means = expr.mean(axis=1, keepdims=True)
+            expr_diff = expr - row_means
 
     else:
         # Single cell level: normalize per cell (counts per 100k)
@@ -1349,13 +1416,13 @@ def secact_activity_inference_scrnaseq(
         expr = expr / col_sums * 1e5  # Counts per 100k (like R)
 
         sample_names = cell_names
+        
+        # Log2 transform
+        expr = np.log2(expr + 1)
 
-    # --- Step 5: Log2 transform ---
-    expr = np.log2(expr + 1)
-
-    # --- Step 6: Compute differential expression (vs row mean) ---
-    row_means = expr.mean(axis=1, keepdims=True)
-    expr_diff = expr - row_means
+        # Compute differential expression (vs row mean)
+        row_means = expr.mean(axis=1, keepdims=True)
+        expr_diff = expr - row_means
 
     # Create DataFrame
     expr_df = pd.DataFrame(expr_diff, index=gene_names, columns=sample_names)

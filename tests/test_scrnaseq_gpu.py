@@ -40,7 +40,7 @@ from secactpy.ridge import CUPY_AVAILABLE
 
 PACKAGE_ROOT = Path(__file__).parent.parent
 DATA_DIR = PACKAGE_ROOT / "dataset"
-INPUT_FILE = DATA_DIR / "input" / "OV_scRNAseq_CD4.h5ad"
+INPUT_FILE = DATA_DIR / "input" / "OV_scRNAseq_data.h5ad"
 
 # Parameters
 CELL_TYPE_COL = "Annotation"

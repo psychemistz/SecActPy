@@ -5,6 +5,8 @@ Test Script: CPU scRNA-seq Inference Validation
 Validates SecActPy scRNA-seq inference against RidgeR output.
 Tests both cell-type resolution (pseudo-bulk) and single-cell resolution.
 
+Supports both H5AD and TXT reference formats.
+
 Dataset: OV_scRNAseq_CD4.h5ad
 Reference: R output from RidgeR::SecAct.activity.inference.scRNAseq
 
@@ -37,7 +39,7 @@ from secactpy import secact_activity_inference_scrnaseq
 
 PACKAGE_ROOT = Path(__file__).parent.parent
 DATA_DIR = PACKAGE_ROOT / "dataset"
-INPUT_FILE = DATA_DIR / "input" / "OV_scRNAseq_CD4.h5ad"
+INPUT_FILE = DATA_DIR / "input" / "OV_scRNAseq_data.h5ad"
 
 # Reference output directories
 OUTPUT_DIR_CT = DATA_DIR / "output" / "signature" / "scRNAseq_ct_res"
@@ -52,13 +54,55 @@ GROUP_COR = 0.9
 
 
 # =============================================================================
-# Comparison Functions
+# Reference Loading Functions
 # =============================================================================
 
-def load_r_output(output_dir: Path) -> dict:
-    """Load R output files."""
+def load_r_output_h5ad(h5ad_path: Path) -> dict:
+    """Load R output from H5AD file created by write_secact_to_h5ad()."""
+    import anndata as ad
+    
+    print(f"  Loading H5AD reference: {h5ad_path}")
+    adata = ad.read_h5ad(h5ad_path)
+    
     result = {}
     
+    # Get sample and protein names
+    # R's write_secact_to_h5ad saves in Python format: obs=samples, var=proteins
+    sample_names = list(adata.obs_names)
+    protein_names = list(adata.var_names)
+    
+    print(f"  Shape: {adata.n_obs} samples × {adata.n_vars} proteins")
+    
+    # X is (samples × proteins), transpose to (proteins × samples) for comparison
+    if hasattr(adata.X, 'toarray'):
+        X = adata.X.toarray()
+    else:
+        X = np.array(adata.X)
+    
+    result['beta'] = pd.DataFrame(X.T, index=protein_names, columns=sample_names)
+    print(f"  Loaded beta: {result['beta'].shape}")
+    
+    # Get obsm matrices (se, zscore, pvalue)
+    for name in ['se', 'zscore', 'pvalue']:
+        if name in adata.obsm:
+            mat = adata.obsm[name]
+            if hasattr(mat, 'toarray'):
+                mat = mat.toarray()
+            else:
+                mat = np.array(mat)
+            # obsm is (samples × proteins), transpose to (proteins × samples)
+            result[name] = pd.DataFrame(mat.T, index=protein_names, columns=sample_names)
+            print(f"  Loaded {name}: {result[name].shape}")
+        else:
+            print(f"  Warning: {name} not found in obsm")
+    
+    return result
+
+
+def load_r_output_txt(output_dir: Path) -> dict:
+    """Load R output from TXT files."""
+    result = {}
+
     for name in ['beta', 'se', 'zscore', 'pvalue']:
         filepath = output_dir / f"{name}.txt"
         if filepath.exists():
@@ -67,22 +111,42 @@ def load_r_output(output_dir: Path) -> dict:
             print(f"  Loaded {name}: {df.shape}")
         else:
             print(f"  Warning: {name}.txt not found")
-    
+
     return result
 
+
+def load_r_output(output_dir: Path) -> dict:
+    """Load R output files (supports both H5AD and TXT formats)."""
+    
+    # Check if it's an H5AD file path
+    if output_dir.suffix == '.h5ad' and output_dir.exists():
+        return load_r_output_h5ad(output_dir)
+    
+    # Check for output.h5ad in directory
+    h5ad_file = output_dir / "output.h5ad"
+    if h5ad_file.exists():
+        return load_r_output_h5ad(h5ad_file)
+    
+    # Fall back to TXT files
+    return load_r_output_txt(output_dir)
+
+
+# =============================================================================
+# Comparison Functions
+# =============================================================================
 
 def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -> dict:
     """Compare Python and R results."""
     comparison = {}
-    
+
     for name in ['beta', 'se', 'zscore', 'pvalue']:
         if name not in py_result or name not in r_result:
             comparison[name] = {'status': 'MISSING', 'message': 'Array not found'}
             continue
-        
+
         py_arr = py_result[name]
         r_arr = r_result[name]
-        
+
         # Check shape
         if py_arr.shape != r_arr.shape:
             comparison[name] = {
@@ -90,7 +154,7 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
                 'message': f'Shape mismatch: Python {py_arr.shape} vs R {r_arr.shape}'
             }
             continue
-        
+
         # Check row names (proteins)
         py_rows = set(py_arr.index)
         r_rows = set(r_arr.index)
@@ -102,7 +166,7 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
                 'message': f'Row mismatch. Missing in Py: {missing_in_py}, Missing in R: {missing_in_r}'
             }
             continue
-        
+
         # Check column names
         py_cols = set(py_arr.columns)
         r_cols = set(r_arr.columns)
@@ -114,30 +178,41 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
                 'message': f'Column mismatch. Missing in Py: {missing_in_py}, Missing in R: {missing_in_r}'
             }
             continue
-        
+
         # Align by row and column names
         py_aligned = py_arr.loc[r_arr.index, r_arr.columns]
-        
+
         # Calculate difference
         diff = np.abs(py_aligned.values - r_arr.values)
         max_diff = np.nanmax(diff)
         mean_diff = np.nanmean(diff)
         
+        # Calculate correlation
+        py_flat = py_aligned.values.flatten()
+        r_flat = r_arr.values.flatten()
+        valid = ~(np.isnan(py_flat) | np.isnan(r_flat))
+        if valid.sum() > 1:
+            corr = np.corrcoef(py_flat[valid], r_flat[valid])[0, 1]
+        else:
+            corr = np.nan
+
         if max_diff <= tolerance:
             comparison[name] = {
                 'status': 'PASS',
                 'max_diff': max_diff,
                 'mean_diff': mean_diff,
-                'message': f'Max diff: {max_diff:.2e}'
+                'correlation': corr,
+                'message': f'Max diff: {max_diff:.2e}, Corr: {corr:.10f}'
             }
         else:
             comparison[name] = {
                 'status': 'FAIL',
                 'max_diff': max_diff,
                 'mean_diff': mean_diff,
-                'message': f'Max diff: {max_diff:.2e} (tolerance: {tolerance:.2e})'
+                'correlation': corr,
+                'message': f'Max diff: {max_diff:.2e}, Corr: {corr:.10f}'
             }
-    
+
     return comparison
 
 
@@ -148,7 +223,7 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
 def main(single_cell=False, save_output=False):
     """
     Run scRNA-seq inference validation.
-    
+
     Parameters
     ----------
     single_cell : bool, default=False
@@ -158,28 +233,39 @@ def main(single_cell=False, save_output=False):
     """
     resolution = "Single-Cell" if single_cell else "Cell-Type"
     output_dir = OUTPUT_DIR_SC if single_cell else OUTPUT_DIR_CT
-    
+
     print("=" * 70)
     print(f"SecActPy scRNA-seq Validation Test (CPU) - {resolution} Resolution")
     print("=" * 70)
-    
+
     # Check anndata
     try:
         import anndata as ad
     except ImportError:
         print("ERROR: anndata is required for this test.")
-        print("Install with: pip install anndata")
         return False
-    
+
     # Check files
     print("\n1. Checking files...")
     if not INPUT_FILE.exists():
         print(f"   ERROR: Input file not found: {INPUT_FILE}")
         return False
     print(f"   Input: {INPUT_FILE}")
-    
+
     validate = True
-    if not output_dir.exists():
+    
+    # Check for reference output (H5AD or directory)
+    h5ad_ref = output_dir / "output.h5ad"
+    if h5ad_ref.exists():
+        print(f"   Reference: {h5ad_ref}")
+    elif output_dir.exists():
+        txt_files = list(output_dir.glob("*.txt"))
+        if txt_files:
+            print(f"   Reference: {output_dir} (TXT files)")
+        else:
+            print(f"   Warning: Reference output not found: {output_dir}")
+            validate = False
+    else:
         print(f"   Warning: Reference output not found: {output_dir}")
         print("   Will run inference but skip validation.")
         print("   To generate R reference, run:")
@@ -187,18 +273,14 @@ def main(single_cell=False, save_output=False):
         print("   library(RidgeR)")
         print("   Seurat_obj <- readRDS('OV_scRNAseq_CD4.rds')")
         if single_cell:
-            print("   Seurat_obj <- SecAct.activity.inference.scRNAseq(Seurat_obj, cellType_meta='Annotation', is_single_cell_level=TRUE)")
-            print("   dir.create('dataset/output/signature/scRNAseq_sc_res', showWarnings=FALSE)")
-            print("   # Save outputs to scRNAseq_sc_res/")
+            print("   Seurat_obj <- SecAct.activity.inference.scRNAseq(Seurat_obj, cellType_meta='Annotation', is_singleCell_level=TRUE)")
+            print("   RidgeR::write_secact_to_h5ad(Seurat_obj, 'dataset/output/signature/scRNAseq_sc_res/output.h5ad')")
         else:
             print("   Seurat_obj <- SecAct.activity.inference.scRNAseq(Seurat_obj, cellType_meta='Annotation')")
-            print("   dir.create('dataset/output/signature/scRNAseq_ct_res', showWarnings=FALSE)")
-            print("   # Save outputs to scRNAseq_ct_res/")
+            print("   RidgeR::write_secact_to_h5ad(Seurat_obj, 'dataset/output/signature/scRNAseq_ct_res/output.h5ad')")
         print("   ```")
         validate = False
-    else:
-        print(f"   Reference: {output_dir}")
-    
+
     # Load data
     print("\n2. Loading AnnData...")
     adata = ad.read_h5ad(INPUT_FILE)
@@ -206,10 +288,39 @@ def main(single_cell=False, save_output=False):
     print(f"   Cell types: {adata.obs[CELL_TYPE_COL].nunique()}")
     print(f"   Cells: {adata.n_obs}")
     
+    # Check data characteristics
+    if hasattr(adata.X, 'toarray'):
+        sample_data = adata.X[:100, :100].toarray()
+    else:
+        sample_data = adata.X[:100, :100]
+    
+    nonzero = sample_data[sample_data != 0]
+    is_integer = len(nonzero) > 0 and np.allclose(nonzero, np.round(nonzero))
+    max_val = np.max(sample_data)
+    has_raw = adata.raw is not None
+    is_likely_normalized = max_val < 20 and not is_integer
+    
+    print(f"   Data looks like counts: {is_integer} (max value: {max_val:.2f})")
+    print(f"   adata.raw available: {has_raw}")
+    
+    if is_likely_normalized and not has_raw:
+        print("\n   ⚠️  WARNING: Data appears to be log-normalized, not raw counts!")
+        print("      Python will use MEAN aggregation (not SUM) for pseudo-bulk.")
+        print("      Results may differ from R if R uses raw counts.")
+        print("\n      For exact R compatibility, export raw counts from Seurat:")
+        print("      ```R")
+        print("      library(SeuratDisk)")
+        print("      # Make sure raw counts are in @assays$RNA@counts")
+        print("      SaveH5Seurat(seurat_obj, 'data.h5seurat')")
+        print("      Convert('data.h5seurat', dest='h5ad')")
+        print("      # Or manually save counts:")
+        print("      writeMM(seurat_obj@assays$RNA@counts, 'counts.mtx')")
+        print("      ```")
+
     # Run inference
     print(f"\n3. Running SecActPy inference (CPU, {resolution})...")
     start_time = time.time()
-    
+
     try:
         py_result = secact_activity_inference_scrnaseq(
             adata,
@@ -225,24 +336,24 @@ def main(single_cell=False, save_output=False):
             use_cache=True,  # Cache permutation tables for faster repeated runs
             verbose=True
         )
-        
+
         elapsed = time.time() - start_time
         print(f"   Completed in {elapsed:.2f} seconds")
         print(f"   Result shape: {py_result['beta'].shape}")
-        
+
     except Exception as e:
         print(f"   ERROR: {e}")
         import traceback
         traceback.print_exc()
         return False
-    
+
     all_passed = True
-    
+
     if validate:
         # Load R reference
         print("\n4. Loading R reference output...")
         r_result = load_r_output(output_dir)
-        
+
         if not r_result:
             print("   Warning: No R output files found!")
             validate = False
@@ -250,21 +361,22 @@ def main(single_cell=False, save_output=False):
             # Compare
             print("\n5. Comparing results...")
             comparison = compare_results(py_result, r_result)
-            
+
             print("\n" + "=" * 70)
             print("RESULTS")
             print("=" * 70)
-            
+
             for name, result in comparison.items():
                 status = result['status']
                 message = result['message']
-                
+                corr = result.get('correlation', 'N/A')
+
                 if status == 'PASS':
                     print(f"  {name:8s}: ✓ PASS - {message}")
                 else:
                     print(f"  {name:8s}: ✗ {status} - {message}")
                     all_passed = False
-            
+
             print("\n" + "=" * 70)
             if all_passed:
                 print("ALL TESTS PASSED! ✓")
@@ -272,32 +384,74 @@ def main(single_cell=False, save_output=False):
             else:
                 print("SOME TESTS FAILED! ✗")
                 print("Check the detailed output above for discrepancies.")
+                
+                # Show detailed diagnostics
+                print("\n--- Diagnostic Info ---")
+                
+                # Compare first few values
+                if 'beta' in py_result and 'beta' in r_result:
+                    py_beta = py_result['beta']
+                    r_beta = r_result['beta']
+                    
+                    # Check if indices match
+                    py_proteins = list(py_beta.index)
+                    r_proteins = list(r_beta.index)
+                    py_samples = list(py_beta.columns)
+                    r_samples = list(r_beta.columns)
+                    
+                    print(f"  Python proteins (first 5): {py_proteins[:5]}")
+                    print(f"  R proteins (first 5):      {r_proteins[:5]}")
+                    print(f"  Python samples (first 5):  {py_samples[:5]}")
+                    print(f"  R samples (first 5):       {r_samples[:5]}")
+                    
+                    # Find max diff location
+                    py_aligned = py_beta.loc[r_beta.index, r_beta.columns]
+                    diff = np.abs(py_aligned.values - r_beta.values)
+                    max_idx = np.unravel_index(np.nanargmax(diff), diff.shape)
+                    protein_name = r_beta.index[max_idx[0]]
+                    sample_name = r_beta.columns[max_idx[1]]
+                    print(f"\n  Max diff at: protein='{protein_name}', sample='{sample_name}'")
+                    print(f"    Python value: {py_aligned.loc[protein_name, sample_name]:.10f}")
+                    print(f"    R value:      {r_beta.loc[protein_name, sample_name]:.10f}")
+                
+                # Save output for CLI comparison
+                print("\n--- Saving Python output for CLI comparison ---")
+                try:
+                    from secactpy.io import save_results_to_h5ad
+                    suffix = "sc_res" if single_cell else "ct_res"
+                    py_output_path = PACKAGE_ROOT / "dataset" / "output" / f"scRNAseq_{suffix}_py_output.h5ad"
+                    save_results_to_h5ad(py_result, py_output_path, verbose=False)
+                    print(f"  Saved to: {py_output_path}")
+                    print(f"\n  Try CLI comparison:")
+                    print(f"  secactpy compare {output_dir / 'output.h5ad'} {py_output_path}")
+                except Exception as e:
+                    print(f"  Could not save: {e}")
             print("=" * 70)
-    
+
     if not validate:
         print("\n" + "=" * 70)
         print("INFERENCE COMPLETE (validation skipped)")
         print("=" * 70)
-    
+
     # Show sample output
     step_num = 6 if validate else 4
     print(f"\n{step_num}. Sample output (first 5 proteins, first 5 samples):")
     print(py_result['zscore'].iloc[:5, :5])
-    
+
     # Activity statistics by cell type
     step_num += 1
     print(f"\n{step_num}. Activity statistics by cell type:")
-    
+
     if single_cell:
         cell_types = adata.obs[CELL_TYPE_COL].values
         cell_names = list(adata.obs_names)
-        
+
         for ct in sorted(set(cell_types)):
             mask = cell_types == ct
             ct_cells = [c for c, m in zip(cell_names, mask) if m]
             ct_data = py_result['zscore'][ct_cells]
             mean_activity = ct_data.mean(axis=1).sort_values(ascending=False)
-            
+
             print(f"\n   {ct} ({len(ct_cells)} cells):")
             print(f"     Top 3 active: {', '.join(mean_activity.head(3).index)}")
             print(f"     Z-score range: [{mean_activity.min():.2f}, {mean_activity.max():.2f}]")
@@ -306,58 +460,22 @@ def main(single_cell=False, save_output=False):
             top_proteins = py_result['zscore'][col].sort_values(ascending=False).head(3)
             print(f"\n   {col}:")
             print(f"     Top 3 active: {', '.join(top_proteins.index)}")
-    
+
     # Save results
     if save_output:
         step_num += 1
         print(f"\n{step_num}. Saving results...")
         try:
-            suffix = "sc_res" if single_cell else "ct_res"
+            from secactpy.io import save_results_to_h5ad
             
-            if single_cell:
-                from secactpy.io import add_activity_to_anndata, save_results
-                
-                # Save h5ad with activity
-                adata = add_activity_to_anndata(adata, py_result)
-                output_h5ad = PACKAGE_ROOT / "dataset" / "output" / f"scRNAseq_{suffix}_cpu_activity.h5ad"
-                adata.write_h5ad(output_h5ad)
-                print(f"   Saved h5ad to: {output_h5ad}")
-                
-                # Save HDF5
-                output_h5 = PACKAGE_ROOT / "dataset" / "output" / f"scRNAseq_{suffix}_cpu_activity.h5"
-                results_to_save = {
-                    'beta': py_result['beta'].values,
-                    'se': py_result['se'].values,
-                    'zscore': py_result['zscore'].values,
-                    'pvalue': py_result['pvalue'].values,
-                    'feature_names': list(py_result['beta'].index),
-                    'sample_names': list(py_result['beta'].columns),
-                }
-                save_results(results_to_save, output_h5)
-                print(f"   Saved HDF5 to: {output_h5}")
-            else:
-                from secactpy.io import save_results
-                
-                output_h5 = PACKAGE_ROOT / "dataset" / "output" / f"scRNAseq_{suffix}_cpu_activity.h5"
-                results_to_save = {
-                    'beta': py_result['beta'].values,
-                    'se': py_result['se'].values,
-                    'zscore': py_result['zscore'].values,
-                    'pvalue': py_result['pvalue'].values,
-                    'feature_names': list(py_result['beta'].index),
-                    'sample_names': list(py_result['beta'].columns),
-                }
-                save_results(results_to_save, output_h5)
-                print(f"   Saved HDF5 to: {output_h5}")
-                
-                # Also save CSV
-                csv_path = PACKAGE_ROOT / "dataset" / "output" / f"scRNAseq_{suffix}_cpu_zscore.csv"
-                py_result['zscore'].to_csv(csv_path)
-                print(f"   Saved CSV to: {csv_path}")
-                
+            suffix = "sc_res" if single_cell else "ct_res"
+            output_h5ad = PACKAGE_ROOT / "dataset" / "output" / f"scRNAseq_{suffix}_cpu_output.h5ad"
+            save_results_to_h5ad(py_result, output_h5ad, verbose=True)
+            print(f"   Saved H5AD to: {output_h5ad}")
+
         except Exception as e:
             print(f"   Could not save: {e}")
-    
+
     return all_passed
 
 
@@ -370,10 +488,10 @@ def parse_args():
 Examples:
   # Cell-type resolution (pseudo-bulk)
   python tests/test_scrnaseq_cpu.py
-  
+
   # Single-cell resolution
   python tests/test_scrnaseq_cpu.py --single-cell
-  
+
   # Save results
   python tests/test_scrnaseq_cpu.py --save
   python tests/test_scrnaseq_cpu.py --single-cell --save
