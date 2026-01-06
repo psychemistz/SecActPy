@@ -14,6 +14,7 @@ Reference: R output from RidgeR::SecAct.activity.inference.ST
 Usage:
     python tests/test_st_cpu.py              # Visium dataset
     python tests/test_st_cpu.py --cosmx      # CosMx dataset
+    python tests/test_st_cpu.py --input data.h5ad --reference ref.h5ad
     python tests/test_st_cpu.py --save
 
 For faster R comparison, convert R text outputs to h5ad first:
@@ -38,21 +39,21 @@ from secactpy import secact_activity_inference_st, load_visium_10x, load_signatu
 
 
 # =============================================================================
-# Configuration
+# Configuration (defaults)
 # =============================================================================
 
 PACKAGE_ROOT = Path(__file__).parent.parent
 DATA_DIR = PACKAGE_ROOT / "dataset"
 
-# Visium configuration
-VISIUM_INPUT = DATA_DIR / "input" / "Visium_HCC"
-VISIUM_OUTPUT = DATA_DIR / "output" / "signature" / "ST"
+# Visium configuration (defaults)
+DEFAULT_VISIUM_INPUT = DATA_DIR / "input" / "Visium_HCC"
+DEFAULT_VISIUM_REFERENCE = DATA_DIR / "output" / "signature" / "ST"
 VISIUM_MIN_GENES = 1000
 VISIUM_SCALE_FACTOR = 1e5
 
-# CosMx configuration
-COSMX_INPUT = DATA_DIR / "input" / "LIHC_CosMx_data.h5ad"
-COSMX_OUTPUT = DATA_DIR / "output" / "signature" / "CosMx"
+# CosMx configuration (defaults)
+DEFAULT_COSMX_INPUT = DATA_DIR / "input" / "LIHC_CosMx_data.h5ad"
+DEFAULT_COSMX_REFERENCE = DATA_DIR / "output" / "signature" / "CosMx"
 COSMX_MIN_GENES = 50
 COSMX_SCALE_FACTOR = 1000
 
@@ -433,12 +434,17 @@ def load_cosmx_data(input_file, min_genes=50, verbose=True):
 # Main Test
 # =============================================================================
 
-def main(cosmx=False, save_output=False):
+def main(input_file=None, reference=None, cosmx=False, save_output=False):
     """
     Run spatial transcriptomics inference validation.
 
     Parameters
     ----------
+    input_file : str, optional
+        Path to input file. If None, uses default for platform.
+    reference : str, optional
+        Path to reference output (H5AD file or folder with TXT files).
+        If None, uses default reference directory.
     cosmx : bool, default=False
         If True, use CosMx dataset. If False, use Visium dataset.
     save_output : bool, default=False
@@ -452,17 +458,23 @@ def main(cosmx=False, save_output=False):
 
     # Set configuration based on platform
     if cosmx:
-        input_path = COSMX_INPUT
-        output_dir = COSMX_OUTPUT
+        default_input = DEFAULT_COSMX_INPUT
+        default_reference = DEFAULT_COSMX_REFERENCE
         min_genes = COSMX_MIN_GENES
         scale_factor = COSMX_SCALE_FACTOR
         sig_filter = True
     else:
-        input_path = VISIUM_INPUT
-        output_dir = VISIUM_OUTPUT
+        default_input = DEFAULT_VISIUM_INPUT
+        default_reference = DEFAULT_VISIUM_REFERENCE
         min_genes = VISIUM_MIN_GENES
         scale_factor = VISIUM_SCALE_FACTOR
         sig_filter = False
+
+    # Determine input path
+    input_path = Path(input_file) if input_file is not None else default_input
+    
+    # Determine reference path
+    reference_path = Path(reference) if reference is not None else default_reference
 
     # Check files
     print("\n1. Checking files...")
@@ -472,20 +484,34 @@ def main(cosmx=False, save_output=False):
     print(f"   Input: {input_path}")
 
     validate = True
-    if not output_dir.exists():
-        print(f"   Warning: Reference output not found: {output_dir}")
+    
+    # Check for reference output (H5AD or directory)
+    if reference_path.suffix == '.h5ad':
+        h5ad_ref = reference_path
+    else:
+        h5ad_ref = reference_path / "output.h5ad"
+    
+    if h5ad_ref.exists():
+        print(f"   Reference: {h5ad_ref}")
+    elif reference_path.is_dir():
+        txt_files = list(reference_path.glob("*.txt"))
+        if txt_files:
+            print(f"   Reference: {reference_path} (TXT files)")
+        else:
+            print(f"   Warning: Reference output not found: {reference_path}")
+            validate = False
+    else:
+        print(f"   Warning: Reference output not found: {reference_path}")
         print("   Will run inference but skip validation.")
         validate = False
-    else:
-        print(f"   Reference: {output_dir}")
 
     # Load data
     print("\n2. Loading data...")
 
     if cosmx:
-        input_data = load_cosmx_data(COSMX_INPUT, min_genes=min_genes, verbose=True)
+        input_data = load_cosmx_data(input_path, min_genes=min_genes, verbose=True)
     else:
-        input_data = load_visium_10x(VISIUM_INPUT, min_genes=min_genes, verbose=True)
+        input_data = load_visium_10x(input_path, min_genes=min_genes, verbose=True)
         print(f"   Spots: {len(input_data['spot_names'])}")
         print(f"   Genes: {len(input_data['gene_names'])}")
 
@@ -554,7 +580,7 @@ def main(cosmx=False, save_output=False):
     if validate:
         # Load R reference
         print("\n4. Loading R reference output...")
-        r_result = load_r_output(output_dir)
+        r_result = load_r_output(reference_path)
 
         if not r_result:
             print("   Warning: No R output files found!")
@@ -594,7 +620,8 @@ def main(cosmx=False, save_output=False):
                     save_results_to_h5ad(py_result, py_output_path, verbose=False)
                     print(f"  Saved to: {py_output_path}")
                     print(f"\n  Try CLI comparison:")
-                    print(f"  secactpy compare {output_dir / 'output.h5ad'} {py_output_path}")
+                    ref_h5ad = reference_path if reference_path.suffix == '.h5ad' else reference_path / 'output.h5ad'
+                    print(f"  secactpy compare {ref_h5ad} {py_output_path}")
                 except Exception as e:
                     print(f"  Could not save: {e}")
             print("=" * 70)
@@ -636,16 +663,32 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Visium dataset
+  # Visium dataset with defaults
   python tests/test_st_cpu.py
 
   # CosMx dataset
   python tests/test_st_cpu.py --cosmx
 
+  # Custom input and reference
+  python tests/test_st_cpu.py --input data.h5ad --reference ref.h5ad
+  python tests/test_st_cpu.py -i Visium_folder/ -r ref_folder/
+
   # Save results
   python tests/test_st_cpu.py --save
   python tests/test_st_cpu.py --cosmx --save
         """
+    )
+    parser.add_argument(
+        '--input', '-i',
+        dest='input_file',
+        default=None,
+        help='Path to input (H5AD file or Visium folder)'
+    )
+    parser.add_argument(
+        '--reference', '-r',
+        dest='reference',
+        default=None,
+        help='Path to R reference output (H5AD file or folder with TXT files)'
     )
     parser.add_argument(
         '--cosmx',
@@ -662,5 +705,10 @@ Examples:
 
 if __name__ == "__main__":
     args = parse_args()
-    success = main(cosmx=args.cosmx, save_output=args.save)
+    success = main(
+        input_file=args.input_file,
+        reference=args.reference,
+        cosmx=args.cosmx,
+        save_output=args.save
+    )
     sys.exit(0 if success else 1)

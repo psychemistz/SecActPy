@@ -13,6 +13,7 @@ Reference: R output from RidgeR::SecAct.activity.inference.scRNAseq
 Usage:
     python tests/test_scrnaseq_cpu.py                  # Cell-type resolution
     python tests/test_scrnaseq_cpu.py --single-cell    # Single-cell resolution
+    python tests/test_scrnaseq_cpu.py --input data.h5ad --reference ref.h5ad
     python tests/test_scrnaseq_cpu.py --save
 
 Expected output:
@@ -34,16 +35,16 @@ from secactpy import secact_activity_inference_scrnaseq
 
 
 # =============================================================================
-# Configuration
+# Configuration (defaults)
 # =============================================================================
 
 PACKAGE_ROOT = Path(__file__).parent.parent
 DATA_DIR = PACKAGE_ROOT / "dataset"
-INPUT_FILE = DATA_DIR / "input" / "OV_scRNAseq_data.h5ad"
+DEFAULT_INPUT = DATA_DIR / "input" / "OV_scRNAseq_data.h5ad"
 
-# Reference output directories
-OUTPUT_DIR_CT = DATA_DIR / "output" / "signature" / "scRNAseq_ct_res"
-OUTPUT_DIR_SC = DATA_DIR / "output" / "signature" / "scRNAseq_sc_res"
+# Default reference output directories
+DEFAULT_REFERENCE_CT = DATA_DIR / "output" / "signature" / "scRNAseq_ct_res"
+DEFAULT_REFERENCE_SC = DATA_DIR / "output" / "signature" / "scRNAseq_sc_res"
 
 # Parameters matching R defaults
 CELL_TYPE_COL = "Annotation"
@@ -220,19 +221,40 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
 # Main Test
 # =============================================================================
 
-def main(single_cell=False, save_output=False):
+def main(input_file=None, reference=None, cell_type_col=None, single_cell=False, save_output=False):
     """
     Run scRNA-seq inference validation.
 
     Parameters
     ----------
+    input_file : str, optional
+        Path to input H5AD file. If None, uses default test file.
+    reference : str, optional
+        Path to reference output (H5AD file or folder with TXT files).
+        If None, uses default reference directory.
+    cell_type_col : str, optional
+        Column name for cell type annotations. If None, uses default.
     single_cell : bool, default=False
         If True, run single-cell resolution. If False, run cell-type resolution.
     save_output : bool, default=False
         If True, save results to files.
     """
     resolution = "Single-Cell" if single_cell else "Cell-Type"
-    output_dir = OUTPUT_DIR_SC if single_cell else OUTPUT_DIR_CT
+    
+    # Determine input file
+    if input_file is not None:
+        input_path = Path(input_file)
+    else:
+        input_path = DEFAULT_INPUT
+    
+    # Determine reference path
+    if reference is not None:
+        reference_path = Path(reference)
+    else:
+        reference_path = DEFAULT_REFERENCE_SC if single_cell else DEFAULT_REFERENCE_CT
+    
+    # Determine cell type column
+    ct_col = cell_type_col if cell_type_col is not None else CELL_TYPE_COL
 
     print("=" * 70)
     print(f"SecActPy scRNA-seq Validation Test (CPU) - {resolution} Resolution")
@@ -247,26 +269,30 @@ def main(single_cell=False, save_output=False):
 
     # Check files
     print("\n1. Checking files...")
-    if not INPUT_FILE.exists():
-        print(f"   ERROR: Input file not found: {INPUT_FILE}")
+    if not input_path.exists():
+        print(f"   ERROR: Input file not found: {input_path}")
         return False
-    print(f"   Input: {INPUT_FILE}")
+    print(f"   Input: {input_path}")
 
     validate = True
     
     # Check for reference output (H5AD or directory)
-    h5ad_ref = output_dir / "output.h5ad"
+    if reference_path.suffix == '.h5ad':
+        h5ad_ref = reference_path
+    else:
+        h5ad_ref = reference_path / "output.h5ad"
+    
     if h5ad_ref.exists():
         print(f"   Reference: {h5ad_ref}")
-    elif output_dir.exists():
-        txt_files = list(output_dir.glob("*.txt"))
+    elif reference_path.is_dir():
+        txt_files = list(reference_path.glob("*.txt"))
         if txt_files:
-            print(f"   Reference: {output_dir} (TXT files)")
+            print(f"   Reference: {reference_path} (TXT files)")
         else:
-            print(f"   Warning: Reference output not found: {output_dir}")
+            print(f"   Warning: Reference output not found: {reference_path}")
             validate = False
     else:
-        print(f"   Warning: Reference output not found: {output_dir}")
+        print(f"   Warning: Reference output not found: {reference_path}")
         print("   Will run inference but skip validation.")
         print("   To generate R reference, run:")
         print("   ```R")
@@ -283,9 +309,9 @@ def main(single_cell=False, save_output=False):
 
     # Load data
     print("\n2. Loading AnnData...")
-    adata = ad.read_h5ad(INPUT_FILE)
+    adata = ad.read_h5ad(input_path)
     print(f"   Shape: {adata.shape} (cells × genes)")
-    print(f"   Cell types: {adata.obs[CELL_TYPE_COL].nunique()}")
+    print(f"   Cell types: {adata.obs[ct_col].nunique()}")
     print(f"   Cells: {adata.n_obs}")
     
     # Check data characteristics
@@ -324,7 +350,7 @@ def main(single_cell=False, save_output=False):
     try:
         py_result = secact_activity_inference_scrnaseq(
             adata,
-            cell_type_col=CELL_TYPE_COL,
+            cell_type_col=ct_col,
             is_single_cell_level=single_cell,
             sig_matrix="secact",
             is_group_sig=True,
@@ -352,7 +378,7 @@ def main(single_cell=False, save_output=False):
     if validate:
         # Load R reference
         print("\n4. Loading R reference output...")
-        r_result = load_r_output(output_dir)
+        r_result = load_r_output(reference_path)
 
         if not r_result:
             print("   Warning: No R output files found!")
@@ -423,7 +449,8 @@ def main(single_cell=False, save_output=False):
                     save_results_to_h5ad(py_result, py_output_path, verbose=False)
                     print(f"  Saved to: {py_output_path}")
                     print(f"\n  Try CLI comparison:")
-                    print(f"  secactpy compare {output_dir / 'output.h5ad'} {py_output_path}")
+                    ref_h5ad = reference_path if reference_path.suffix == '.h5ad' else reference_path / 'output.h5ad'
+                    print(f"  secactpy compare {ref_h5ad} {py_output_path}")
                 except Exception as e:
                     print(f"  Could not save: {e}")
             print("=" * 70)
@@ -443,7 +470,7 @@ def main(single_cell=False, save_output=False):
     print(f"\n{step_num}. Activity statistics by cell type:")
 
     if single_cell:
-        cell_types = adata.obs[CELL_TYPE_COL].values
+        cell_types = adata.obs[ct_col].values
         cell_names = list(adata.obs_names)
 
         for ct in sorted(set(cell_types)):
@@ -486,16 +513,41 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Cell-type resolution (pseudo-bulk)
+  # Cell-type resolution (pseudo-bulk) with defaults
   python tests/test_scrnaseq_cpu.py
 
   # Single-cell resolution
   python tests/test_scrnaseq_cpu.py --single-cell
 
+  # Custom input and reference
+  python tests/test_scrnaseq_cpu.py --input data.h5ad --reference ref.h5ad
+  python tests/test_scrnaseq_cpu.py -i data.h5ad -r ref_folder/
+
+  # Custom cell type column
+  python tests/test_scrnaseq_cpu.py --input data.h5ad --cell-type-col CellType
+
   # Save results
   python tests/test_scrnaseq_cpu.py --save
   python tests/test_scrnaseq_cpu.py --single-cell --save
         """
+    )
+    parser.add_argument(
+        '--input', '-i',
+        dest='input_file',
+        default=None,
+        help='Path to input H5AD file (default: test dataset)'
+    )
+    parser.add_argument(
+        '--reference', '-r',
+        dest='reference',
+        default=None,
+        help='Path to R reference output (H5AD file or folder with TXT files)'
+    )
+    parser.add_argument(
+        '--cell-type-col',
+        dest='cell_type_col',
+        default=None,
+        help='Column name for cell type annotations (default: Annotation)'
     )
     parser.add_argument(
         '--single-cell',
@@ -512,5 +564,11 @@ Examples:
 
 if __name__ == "__main__":
     args = parse_args()
-    success = main(single_cell=args.single_cell, save_output=args.save)
+    success = main(
+        input_file=args.input_file,
+        reference=args.reference,
+        cell_type_col=args.cell_type_col,
+        single_cell=args.single_cell,
+        save_output=args.save
+    )
     sys.exit(0 if success else 1)

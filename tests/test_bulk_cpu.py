@@ -13,8 +13,9 @@ Usage:
     python tests/test_bulk_cpu.py
     python tests/test_bulk_cpu.py --save
     python tests/test_bulk_cpu.py --resample 1000  # Test with 1000 resampled samples
-    python tests/test_bulk_cpu.py data.csv --gene-col 0
-    python tests/test_bulk_cpu.py data.tsv --no-validate
+    python tests/test_bulk_cpu.py --input data.csv --gene-col 0
+    python tests/test_bulk_cpu.py --input data.h5ad --reference ref_output.h5ad
+    python tests/test_bulk_cpu.py --input data.txt --reference ref_folder/
 
 Expected output:
     All arrays should match R output exactly (or within numerical tolerance).
@@ -35,13 +36,13 @@ from secactpy import secact_activity_inference, load_expression_data
 
 
 # =============================================================================
-# Configuration
+# Configuration (defaults)
 # =============================================================================
 
 PACKAGE_ROOT = Path(__file__).parent.parent
 DATA_DIR = PACKAGE_ROOT / "dataset"
-INPUT_FILE = DATA_DIR / "input" / "Ly86-Fc_vs_Vehicle_logFC.txt"
-OUTPUT_DIR = DATA_DIR / "output" / "signature" / "bulk"
+DEFAULT_INPUT = DATA_DIR / "input" / "Ly86-Fc_vs_Vehicle_logFC.txt"
+DEFAULT_REFERENCE = DATA_DIR / "output" / "signature" / "bulk"
 
 # Parameters matching R defaults
 LAMBDA = 5e5
@@ -247,7 +248,7 @@ def compare_results(py_result: dict, r_result: dict, tolerance: float = 1e-10) -
 # Main Test
 # =============================================================================
 
-def main(input_file=None, gene_col=None, validate=True, save_output=False, resample=None):
+def main(input_file=None, reference=None, gene_col=None, validate=True, save_output=False, resample=None):
     """
     Run bulk RNA-seq inference.
 
@@ -255,6 +256,9 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False, resam
     ----------
     input_file : str, optional
         Path to input expression file. If None, uses default test file.
+    reference : str, optional
+        Path to reference output (H5AD file or folder with TXT files).
+        If None, uses default reference directory.
     gene_col : int or str, optional
         Column containing gene symbols (if not row index).
     validate : bool, default=True
@@ -274,12 +278,17 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False, resam
         if not input_path.exists():
             print(f"ERROR: Input file not found: {input_path}")
             return False
-        validate = False  # Custom file, no R reference
     else:
-        input_path = INPUT_FILE
+        input_path = DEFAULT_INPUT
         if not input_path.exists():
             print(f"ERROR: Default input file not found: {input_path}")
             return False
+
+    # Determine reference path
+    if reference is not None:
+        reference_path = Path(reference)
+    else:
+        reference_path = DEFAULT_REFERENCE
 
     # Check files
     print("\n1. Checking files...")
@@ -292,19 +301,23 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False, resam
 
     if validate:
         # Check for reference output (H5AD or directory)
-        h5ad_ref = OUTPUT_DIR / "output.h5ad"
+        if reference_path.suffix == '.h5ad':
+            h5ad_ref = reference_path
+        else:
+            h5ad_ref = reference_path / "output.h5ad"
+        
         if h5ad_ref.exists():
             print(f"   Reference: {h5ad_ref}")
-        elif OUTPUT_DIR.exists():
-            txt_files = list(OUTPUT_DIR.glob("*.txt"))
+        elif reference_path.is_dir():
+            txt_files = list(reference_path.glob("*.txt"))
             if txt_files:
-                print(f"   Reference: {OUTPUT_DIR} (TXT files)")
+                print(f"   Reference: {reference_path} (TXT files)")
             else:
-                print(f"   Warning: Reference output not found: {OUTPUT_DIR}")
+                print(f"   Warning: Reference output not found: {reference_path}")
                 print("   Skipping validation.")
                 validate = False
         else:
-            print(f"   Warning: Reference output not found: {OUTPUT_DIR}")
+            print(f"   Warning: Reference output not found: {reference_path}")
             print("   To generate R reference, run:")
             print("   ```R")
             print("   library(RidgeR)")
@@ -365,7 +378,7 @@ def main(input_file=None, gene_col=None, validate=True, save_output=False, resam
     if validate:
         # Load R reference
         print("\n4. Loading R reference output...")
-        r_result = load_r_output(OUTPUT_DIR)
+        r_result = load_r_output(reference_path)
 
         if not r_result:
             print("   Warning: No R output files found!")
@@ -431,24 +444,34 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run with default test file and validate against R
+  # Run with default test dataset
   python tests/test_bulk_cpu.py
 
-  # Run with resampled data (1000 samples) for benchmarking
-  python tests/test_bulk_cpu.py --resample 1000
+  # Run with custom input and reference
+  python tests/test_bulk_cpu.py --input data.txt --reference ref_output.h5ad
+  python tests/test_bulk_cpu.py -i data.txt -r ref_folder/
 
-  # Run with custom CSV file
-  python tests/test_bulk_cpu.py data.csv --gene-col 0
+  # Run with custom CSV file (no validation)
+  python tests/test_bulk_cpu.py --input data.csv --gene-col 0 --no-validate
 
   # Run without validation and save results
   python tests/test_bulk_cpu.py --no-validate --save
+
+  # Benchmark with resampled data
+  python tests/test_bulk_cpu.py --resample 1000
         """
     )
     parser.add_argument(
-        'input_file',
-        nargs='?',
+        '--input', '-i',
+        dest='input_file',
         default=None,
         help='Path to expression data file (default: test dataset)'
+    )
+    parser.add_argument(
+        '--reference', '-r',
+        dest='reference',
+        default=None,
+        help='Path to R reference output (H5AD file or folder with TXT files)'
     )
     parser.add_argument(
         '--gene-col',
@@ -488,6 +511,7 @@ if __name__ == "__main__":
 
     success = main(
         input_file=args.input_file,
+        reference=args.reference,
         gene_col=gene_col,
         validate=not args.no_validate,
         save_output=args.save,
