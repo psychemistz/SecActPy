@@ -89,9 +89,24 @@ For large datasets (>100k samples):
     >>> from secactpy import load_results, results_to_anndata
     >>> results = load_results("results.h5ad")
     >>> adata = results_to_anndata(results)  # For scanpy integration
+
+Utility Functions (NEW in v0.2.0):
+----------------------------------
+    >>> from secactpy.utils import sweep_sparse, rm_duplicates, normalize_sparse
+    >>> from secactpy.spatial import calc_spatial_weights, spatial_lag
+    >>>
+    >>> # Sparse matrix operations
+    >>> m_centered = sweep_sparse(m, margin=0, stats=row_means, fun="subtract")
+    >>>
+    >>> # Remove duplicate genes (keep highest sum)
+    >>> expr_clean = rm_duplicates(expr_df)
+    >>>
+    >>> # Spatial weight calculation for ST data
+    >>> W = calc_spatial_weights(coords, radius=100, sigma=50)
+    >>> smoothed = spatial_lag(values, W)
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 # Batch processing for large datasets
 from .batch import (
@@ -167,7 +182,124 @@ from .signature import (
     load_signature,
 )
 
+# ============================================================================
+# NEW in v0.2.0: Utility and Spatial modules
+# ============================================================================
+# These are available as submodules: secactpy.utils and secactpy.spatial
+# We also import commonly used functions to top-level for convenience
+
+UTILS_AVAILABLE = False
+SPATIAL_AVAILABLE = False
+
+try:
+    from .utils import (
+        # Sparse matrix utilities
+        sweep_sparse,
+        normalize_sparse,
+        sparse_column_scale,
+        sparse_log1p,
+        sparse_row_vars,
+        sparse_col_vars,
+        # Gene utilities  
+        transfer_symbol,
+        rm_duplicates as utils_rm_duplicates,  # Avoid conflict with inference.expand_rows
+        scalar1,
+        filter_genes,
+        match_genes,
+        # Survival utilities
+        coxph_best_separation,
+        survival_analysis,
+        kaplan_meier_plot,
+        log_rank_test,
+    )
+    UTILS_AVAILABLE = True
+except ImportError:
+    # Define placeholders if utils not available
+    sweep_sparse = None
+    normalize_sparse = None
+    sparse_column_scale = None
+    sparse_log1p = None
+    sparse_row_vars = None
+    sparse_col_vars = None
+    transfer_symbol = None
+    utils_rm_duplicates = None
+    scalar1 = None
+    filter_genes = None
+    match_genes = None
+    coxph_best_separation = None
+    survival_analysis = None
+    kaplan_meier_plot = None
+    log_rank_test = None
+
+try:
+    from .spatial import (
+        calc_spatial_weights,
+        calc_spatial_weights_visium,
+        row_normalize_weights,
+        spatial_lag,
+        get_neighbors,
+        coords_to_distance_matrix,
+    )
+    SPATIAL_AVAILABLE = True
+except ImportError:
+    # Define placeholders if spatial not available
+    calc_spatial_weights = None
+    calc_spatial_weights_visium = None
+    row_normalize_weights = None
+    spatial_lag = None
+    get_neighbors = None
+    coords_to_distance_matrix = None
+
+try:
+    from .plotting import (
+        # Spatial plots
+        plot_spatial,
+        plot_spatial_feature,
+        plot_spatial_multi,
+        plot_spatial_categorical,
+        # Heatmaps
+        plot_activity_heatmap,
+        plot_activity_heatmap_simple,
+        plot_top_activities,
+        # Cell-cell communication
+        plot_ccc_heatmap,
+        plot_ccc_dotplot,
+        plot_ccc_circle,
+        # Bar plots
+        plot_activity_bar,
+        plot_activity_lollipop,
+        plot_activity_waterfall,
+        plot_significance,
+        # Survival plots
+        plot_kaplan_meier,
+        plot_survival_by_activity,
+        plot_forest,
+    )
+    PLOTTING_AVAILABLE = True
+except ImportError:
+    PLOTTING_AVAILABLE = False
+    # Placeholders
+    plot_spatial = None
+    plot_spatial_feature = None
+    plot_spatial_multi = None
+    plot_spatial_categorical = None
+    plot_activity_heatmap = None
+    plot_activity_heatmap_simple = None
+    plot_top_activities = None
+    plot_ccc_heatmap = None
+    plot_ccc_dotplot = None
+    plot_ccc_circle = None
+    plot_activity_bar = None
+    plot_activity_lollipop = None
+    plot_activity_waterfall = None
+    plot_significance = None
+    plot_kaplan_meier = None
+    plot_survival_by_activity = None
+    plot_forest = None
+
 __all__ = [
+    # Version
+    "__version__",
     # Main API
     "secact_activity",
     "secact_activity_inference",
@@ -227,10 +359,65 @@ __all__ = [
     "CUPY_INIT_ERROR",
     "H5PY_AVAILABLE",
     "ANNDATA_AVAILABLE",
+    "UTILS_AVAILABLE",
+    "SPATIAL_AVAILABLE",
+    "PLOTTING_AVAILABLE",
     # Constants
     "DEFAULT_LAMBDA",
     "DEFAULT_NRAND",
     "DEFAULT_SEED",
-    # Version
-    "__version__",
+    # -------------------------------------------------------------------------
+    # NEW in v0.2.0: Utils (also available via secactpy.utils)
+    # -------------------------------------------------------------------------
+    # Sparse matrix utilities
+    "sweep_sparse",
+    "normalize_sparse",
+    "sparse_column_scale",
+    "sparse_log1p",
+    "sparse_row_vars",
+    "sparse_col_vars",
+    # Gene utilities
+    "transfer_symbol",
+    "scalar1",
+    "filter_genes",
+    "match_genes",
+    # Survival utilities
+    "coxph_best_separation",
+    "survival_analysis",
+    "kaplan_meier_plot",
+    "log_rank_test",
+    # -------------------------------------------------------------------------
+    # NEW in v0.2.0: Spatial (also available via secactpy.spatial)
+    # -------------------------------------------------------------------------
+    "calc_spatial_weights",
+    "calc_spatial_weights_visium",
+    "row_normalize_weights",
+    "spatial_lag",
+    "get_neighbors",
+    "coords_to_distance_matrix",
+    # -------------------------------------------------------------------------
+    # NEW in v0.2.0: Plotting (also available via secactpy.plotting)
+    # -------------------------------------------------------------------------
+    # Spatial plots
+    "plot_spatial",
+    "plot_spatial_feature",
+    "plot_spatial_multi",
+    "plot_spatial_categorical",
+    # Heatmaps
+    "plot_activity_heatmap",
+    "plot_activity_heatmap_simple",
+    "plot_top_activities",
+    # Cell-cell communication
+    "plot_ccc_heatmap",
+    "plot_ccc_dotplot",
+    "plot_ccc_circle",
+    # Bar plots
+    "plot_activity_bar",
+    "plot_activity_lollipop",
+    "plot_activity_waterfall",
+    "plot_significance",
+    # Survival plots
+    "plot_kaplan_meier",
+    "plot_survival_by_activity",
+    "plot_forest",
 ]
